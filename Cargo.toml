@@ -3,6 +3,9 @@ name = "git-workspaces"
 version = "0.1.0"
 edition = "2021"
 description = "Manifest-driven multi-repo git plugin"
+license = "MPL-2.0"
+repository = "https://github.com/nicolaei/git-workspaces"
+homepage = "https://github.com/nicolaei/git-workspaces"
 
 [[bin]]
 name = "git-workspaces"
@@ -20,3 +23,8 @@ toml = "0.8"
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = "3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
