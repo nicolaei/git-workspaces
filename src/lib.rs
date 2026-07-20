@@ -46,6 +46,19 @@ enum Command {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Clone `<remote>` to `<path>` (relative to the workspace root) and
+    /// register it in `workspaces.toml`. The manifest key doubles as the
+    /// on-disk path, same convention `list`/`sync` rely on.
+    Add {
+        /// Where to clone the repo, relative to the workspace root. Also
+        /// becomes its manifest key.
+        path: String,
+        /// The remote to clone.
+        remote: String,
+        /// Record an explicit branch in the manifest entry.
+        #[arg(long)]
+        branch: Option<String>,
+    },
 }
 
 /// The one true entrypoint. `main.rs` is a thin wrapper around this.
@@ -60,6 +73,7 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
             Some(Command::Sync { repos }) => run_sync(cwd, &repos, out),
             Some(Command::Status { repos }) => run_status(cwd, &repos, out),
             Some(Command::Exec { repos, parallel, command }) => run_exec(cwd, &repos, &command, parallel, out),
+            Some(Command::Add { path, remote, branch }) => run_add(cwd, &path, &remote, branch.as_deref(), out),
         },
         Err(e) => {
             // clap's Error already renders --help/--version/usage-error text
@@ -159,6 +173,46 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Clone `remote` to `<workspace root>/<path>` and register it in
+/// `workspaces.toml`. The duplicate-path check happens before the clone so
+/// a repeat `add` on an already-declared name fails fast without touching
+/// the filesystem (logged decision, story F).
+fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut impl Write) -> ExitCode {
+    let (root, manifest) = match load_manifest(cwd, out) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    if manifest.repos.contains_key(path) {
+        writeln!(out, "error: \"{path}\" is already declared in workspaces.toml").ok();
+        return ExitCode::FAILURE;
+    }
+
+    let full_path = root.join(path);
+    if let Err(e) = shell::git::clone(remote, &full_path) {
+        writeln!(out, "error: {e}").ok();
+        return ExitCode::FAILURE;
+    }
+
+    let updated = match domain::manifest::add_repo(&manifest, path, remote, branch.map(str::to_string)) {
+        Ok(updated) => updated,
+        Err(e) => {
+            writeln!(out, "error: {e}").ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let manifest_path = root.join("workspaces.toml");
+    let serialized = domain::manifest::serialize_manifest(&updated);
+    if let Err(e) = shell::fs::write_string(&manifest_path, &serialized) {
+        writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
+        return ExitCode::FAILURE;
+    }
+
+    writeln!(out, "{path}: cloned and added to workspaces.toml").ok();
+    ExitCode::SUCCESS
 }
 
 fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {

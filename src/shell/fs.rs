@@ -12,6 +12,12 @@ pub fn read_to_string(path: &Path) -> io::Result<String> {
     std::fs::read_to_string(path)
 }
 
+/// Real filesystem write for the manifest contents (used by `add` to
+/// persist an updated `workspaces.toml`).
+pub fn write_string(path: &Path, contents: &str) -> io::Result<()> {
+    std::fs::write(path, contents)
+}
+
 const BEGIN_MARKER: &str = "# >>> git workspaces managed (do not edit below) >>>";
 const END_MARKER: &str = "# <<< git workspaces managed <<<";
 
