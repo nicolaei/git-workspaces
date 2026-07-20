@@ -32,6 +32,20 @@ enum Command {
         /// Repo names to narrow to. Omit to report on the whole workspace.
         repos: Vec<String>,
     },
+    /// Run an arbitrary command inside each selected repo's directory.
+    /// Sequential by default; a non-zero exit in one repo is collected and
+    /// reported at the end, never aborts the others. Whole workspace by
+    /// default; pass repo names before `--` to narrow.
+    Exec {
+        /// Repo names to narrow to. Omit to run in the whole workspace.
+        repos: Vec<String>,
+        /// Run repos concurrently instead of one after another.
+        #[arg(long)]
+        parallel: bool,
+        /// The command and its arguments, given after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 /// The one true entrypoint. `main.rs` is a thin wrapper around this.
@@ -45,6 +59,7 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
             Some(Command::List) => run_list(cwd, out),
             Some(Command::Sync { repos }) => run_sync(cwd, &repos, out),
             Some(Command::Status { repos }) => run_status(cwd, &repos, out),
+            Some(Command::Exec { repos, parallel, command }) => run_exec(cwd, &repos, &command, parallel, out),
         },
         Err(e) => {
             // clap's Error already renders --help/--version/usage-error text
@@ -180,6 +195,102 @@ fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// Run `command` in each selected repo's directory. Sequential by default;
+/// `parallel` fans the runs out across threads instead. A non-zero exit in
+/// one repo never aborts the others — every repo runs to completion and
+/// gets a line in the summary, and the overall exit code is failure if any
+/// repo failed (or couldn't even be spawned).
+fn run_exec(cwd: &Path, repos: &[String], command: &[String], parallel: bool, out: &mut impl Write) -> ExitCode {
+    let (root, manifest) = match load_manifest(cwd, out) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    let targets = match domain::select::resolve_targets(&manifest, repos) {
+        Ok(targets) => targets,
+        Err(e) => {
+            writeln!(out, "error: {e}").ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let results = run_command_across(&root, &targets, command, parallel);
+
+    let mut failed = false;
+    for (_name, result) in &results {
+        match result {
+            Ok(outcome) => {
+                if !outcome.stdout.is_empty() {
+                    write!(out, "{}", outcome.stdout).ok();
+                }
+                if !outcome.stderr.is_empty() {
+                    write!(out, "{}", outcome.stderr).ok();
+                }
+                if outcome.exit_code != 0 {
+                    failed = true;
+                }
+            }
+            Err(_) => failed = true,
+        }
+    }
+
+    writeln!(out).ok();
+    writeln!(out, "Summary:").ok();
+    for (name, result) in &results {
+        match result {
+            Ok(outcome) => {
+                writeln!(out, "{name}: exit {}", outcome.exit_code).ok();
+            }
+            Err(e) => {
+                writeln!(out, "{name}: error: {e}").ok();
+            }
+        }
+    }
+
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Run `command` across every target's directory, either one after another
+/// or concurrently, always returning results in the same order as
+/// `targets` regardless of which mode ran or which thread finished first —
+/// that ordering-by-submission-not-by-completion is what keeps a repo's
+/// result correctly attributed to its name under `--parallel` (logged
+/// decision, story E).
+fn run_command_across(
+    root: &Path,
+    targets: &[String],
+    command: &[String],
+    parallel: bool,
+) -> Vec<(String, Result<shell::exec::ExecOutcome, shell::exec::ExecError>)> {
+    if !parallel {
+        return targets
+            .iter()
+            .map(|name| {
+                let path = root.join(name);
+                (name.clone(), shell::exec::run(&path, command))
+            })
+            .collect();
+    }
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = targets
+            .iter()
+            .map(|name| {
+                let path = root.join(name);
+                scope.spawn(move || (name.clone(), shell::exec::run(&path, command)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("exec worker thread panicked"))
+            .collect()
+    })
 }
 
 /// Render the `status` output table: REPO/BRANCH/STATE/SYNC, plus a NOTE

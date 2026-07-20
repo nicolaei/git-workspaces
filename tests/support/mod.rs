@@ -272,6 +272,14 @@ impl RepoHandle {
         self
     }
 
+    /// Write an untracked file into the repo at the given relative path —
+    /// used by exec tests to make a command's outcome depend on real
+    /// per-repo state on disk.
+    pub fn write_file(&self, relative_path: &str, contents: &str) -> &Self {
+        std::fs::write(self.path.join(relative_path), contents).expect("write file into repo");
+        self
+    }
+
     /// Check out a new branch, diverging from the manifest's declared
     /// branch — used to exercise the status command's branch-mismatch note.
     pub fn checkout_new_branch(&self, name: &str) -> &Self {
