@@ -1,0 +1,20 @@
+[package]
+name = "git-workspaces"
+version = "0.1.0"
+edition = "2021"
+description = "Manifest-driven multi-repo git plugin"
+
+[[bin]]
+name = "git-workspaces"
+path = "src/main.rs"
+
+[lib]
+name = "git_workspaces"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"
