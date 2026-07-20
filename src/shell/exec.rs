@@ -6,18 +6,8 @@
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecError {
-    pub message: String,
-}
-
-impl std::fmt::Display for ExecError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ExecError {}
+/// Alias, not a new type — see `shell::error` (Fowler: Duplicate Code).
+pub type ExecError = super::error::ShellError;
 
 /// The outcome of running a command to completion: its exit code and
 /// captured stdout/stderr, kept separate rather than combined so callers

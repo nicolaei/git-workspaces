@@ -87,3 +87,28 @@ fn exec_parallel_still_attributes_results_to_the_correct_repo() {
         result.stdout
     );
 }
+
+#[test]
+fn exec_reports_a_repo_that_has_never_been_synced_as_a_failure_in_the_summary() {
+    let workspace = Workspace::new();
+    let api_remote = workspace.fixture_remote_with_commit("api");
+    let web_remote = workspace.fixture_remote_with_commit("web");
+    workspace.declares_repo("api", api_remote.to_str().unwrap());
+    workspace.declares_repo("web", web_remote.to_str().unwrap());
+    workspace.run(&["sync", "api"]);
+    // Deliberately skip syncing web — declared but never cloned onto disk.
+
+    let result = workspace.run(&["exec", "--", "true"]);
+
+    assert!(!result.success, "expected overall exec to fail because web was never cloned");
+    assert!(
+        result.stdout.contains("api: exit 0"),
+        "expected the synced repo to still run and succeed, got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("web: error:"),
+        "expected the uncloned repo to be reported as an error, got: {}",
+        result.stdout
+    );
+}

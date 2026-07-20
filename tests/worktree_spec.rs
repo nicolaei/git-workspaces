@@ -130,3 +130,73 @@ fn worktree_remove_cleans_up_every_repo_and_the_directory() {
     assert!(workspace.repo("api").exists(), "expected primary api clone to remain");
     assert!(workspace.repo("web").exists(), "expected primary web clone to remain");
 }
+
+#[test]
+fn worktree_remove_errors_clearly_on_a_name_that_was_never_added() {
+    let workspace = Workspace::new();
+    let api_remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", api_remote.to_str().unwrap());
+    workspace.run(&["sync"]);
+    // Deliberately skip `worktree add` — "feature-x" was never created.
+
+    let result = workspace.run(&["worktree", "remove", "feature-x"]);
+
+    assert!(!result.success, "expected worktree remove to fail for a name that was never added");
+    assert!(
+        result.stdout.contains("feature-x") || result.stderr.contains("feature-x"),
+        "expected the error to name the missing worktree, stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+#[test]
+fn worktree_list_is_empty_when_no_worktree_has_ever_been_added() {
+    let workspace = Workspace::new();
+    let api_remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", api_remote.to_str().unwrap());
+    workspace.run(&["sync"]);
+    // Deliberately skip `worktree add` — no `.worktrees/` directory exists yet.
+
+    let result = workspace.run(&["worktree", "list"]);
+
+    assert!(result.success, "expected worktree list to succeed with no worktrees yet, stdout={} stderr={}", result.stdout, result.stderr);
+    assert!(result.stdout.trim().is_empty(), "expected no output, got: {}", result.stdout);
+}
+
+#[test]
+fn worktree_list_reports_a_worktree_missing_a_repo_subdirectory_as_broken() {
+    let workspace = Workspace::new();
+    let api_remote = workspace.fixture_remote_with_commit("api");
+    let web_remote = workspace.fixture_remote_with_commit("web");
+    workspace.declares_repo("api", api_remote.to_str().unwrap());
+    workspace.declares_repo("web", web_remote.to_str().unwrap());
+    workspace.run(&["sync"]);
+    workspace.run(&["worktree", "add", "feature-x"]);
+    // Simulate a partially interrupted worktree by deleting one repo's copy
+    // out from under it, without going through `worktree remove`.
+    std::fs::remove_dir_all(workspace.root().join(".worktrees/feature-x/web")).expect("remove web's worktree copy");
+
+    let result = workspace.run(&["worktree", "list"]);
+
+    assert!(result.success, "expected worktree list to succeed even with a broken worktree, stdout={} stderr={}", result.stdout, result.stderr);
+    assert!(
+        result.stdout.contains("feature-x: broken") && result.stdout.contains("web"),
+        "expected feature-x to be reported broken, naming web, got: {}",
+        result.stdout
+    );
+}
+
+#[test]
+fn worktree_add_fails_clearly_for_a_name_that_already_has_a_worktree() {
+    let workspace = Workspace::new();
+    let api_remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", api_remote.to_str().unwrap());
+    workspace.run(&["sync"]);
+    workspace.run(&["worktree", "add", "feature-x"]);
+
+    let result = workspace.run(&["worktree", "add", "feature-x"]);
+
+    assert!(!result.success, "expected a second worktree add with the same name to fail");
+    // The original worktree must survive a failed duplicate attempt.
+    assert!(workspace.root().join(".worktrees/feature-x/api").is_dir(), "expected the original worktree to remain intact");
+}

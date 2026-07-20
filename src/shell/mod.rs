@@ -2,6 +2,7 @@
 //! do, executes the decision, prints the result. Decides nothing
 //! business-relevant itself.
 
+pub mod error;
 pub mod exec;
 pub mod fs;
 pub mod git;

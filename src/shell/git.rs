@@ -5,18 +5,10 @@
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitError {
-    pub message: String,
-}
-
-impl std::fmt::Display for GitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for GitError {}
+/// Alias, not a new type — `git` and `exec` errors are structurally
+/// identical and only ever get formatted via `Display` (Fowler: Duplicate
+/// Code; see `shell::error`).
+pub type GitError = super::error::ShellError;
 
 /// `git init <path>`.
 pub fn init(path: &Path) -> Result<(), GitError> {
@@ -62,15 +54,13 @@ pub fn create_branch(path: &Path, branch: &str) -> Result<(), GitError> {
 
 /// Whether `branch` exists as a local branch in the repo at `path`.
 pub fn branch_exists(path: &Path, branch: &str) -> Result<bool, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--verify", "--quiet"])
-        .arg(format!("refs/heads/{branch}"))
-        .output()
-        .map_err(|e| GitError {
-            message: format!("failed to run git: {e}"),
-        })?;
+    let output = run_output(
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{branch}")),
+    )?;
     Ok(output.status.success())
 }
 
@@ -137,47 +127,20 @@ fn fetch_quietly(path: &Path) {
 
 /// `git -C <path> rev-parse --abbrev-ref HEAD`.
 pub fn current_branch(path: &Path) -> Result<String, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .map_err(|e| GitError {
-            message: format!("failed to run git: {e}"),
-        })?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(GitError {
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        })
-    }
+    let output = run_output(Command::new("git").arg("-C").arg(path).args(["rev-parse", "--abbrev-ref", "HEAD"]))?;
+    stdout_trimmed_or_stderr_err(output)
 }
 
 /// `git -C <path> status --porcelain`, split into non-empty lines — one
 /// line per changed file.
 fn porcelain_status(path: &Path) -> Result<Vec<String>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["status", "--porcelain"])
-        .output()
-        .map_err(|e| GitError {
-            message: format!("failed to run git: {e}"),
-        })?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| line.to_string())
-            .collect())
-    } else {
-        Err(GitError {
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        })
-    }
+    let output = run_output(Command::new("git").arg("-C").arg(path).args(["status", "--porcelain"]))?;
+    let stdout = stdout_trimmed_or_stderr_err(output)?;
+    Ok(stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.to_string())
+        .collect())
 }
 
 /// `git -C <path> rev-list --left-right --count @{u}...HEAD`, parsed into
@@ -205,12 +168,34 @@ fn ahead_behind(path: &Path) -> (u32, u32) {
 }
 
 fn run(command: &mut Command) -> Result<(), GitError> {
-    let output = command.output().map_err(|e| GitError {
-        message: format!("failed to run git: {e}"),
-    })?;
-
+    let output = run_output(command)?;
     if output.status.success() {
         Ok(())
+    } else {
+        Err(GitError {
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+/// Spawn `command` and return its full `Output` regardless of exit code —
+/// only a failure to spawn at all (e.g. `git` not on PATH) is an `Err`.
+/// Shared by every caller that needs stdout/exit-status details beyond a
+/// plain success/failure (`run`, `branch_exists`, `current_branch`,
+/// `porcelain_status`) so the spawn-and-map-the-io-error step exists once
+/// (Fowler: Duplicate Code — Extract Function).
+fn run_output(command: &mut Command) -> Result<std::process::Output, GitError> {
+    command.output().map_err(|e| GitError {
+        message: format!("failed to run git: {e}"),
+    })
+}
+
+/// Shared by `current_branch`/`porcelain_status`: on success, trimmed
+/// stdout; on failure, `Err` carrying trimmed stderr. (Fowler: Duplicate
+/// Code — Extract Function.)
+fn stdout_trimmed_or_stderr_err(output: std::process::Output) -> Result<String, GitError> {
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         Err(GitError {
             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),

@@ -6,17 +6,18 @@
 
 use super::manifest::Manifest;
 
-/// What to do about one repo in the manifest.
+/// What to do about one repo in the manifest. `name` doubles as the on-disk
+/// path relative to the workspace root (see manifest schema decision in the
+/// epic's architecture note) — there is no independent `path` field; a
+/// prior version speculatively carried one, but nothing ever set it to
+/// anything other than `name`, so it was removed (Fowler: Speculative
+/// Generality).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncAction {
-    /// Not present on disk — clone it from `remote` into `path`.
-    Clone {
-        name: String,
-        remote: String,
-        path: String,
-    },
+    /// Not present on disk — clone it from `remote`.
+    Clone { name: String, remote: String },
     /// Already present on disk — pull it forward.
-    Pull { name: String, path: String },
+    Pull { name: String },
 }
 
 /// Which repo paths already exist on disk, injected so `plan_sync` stays
@@ -41,15 +42,11 @@ pub fn plan_sync(manifest: &Manifest, disk_state: &impl DiskState) -> Vec<SyncAc
         .iter()
         .map(|(name, spec)| {
             if disk_state.exists(name) {
-                SyncAction::Pull {
-                    name: name.clone(),
-                    path: name.clone(),
-                }
+                SyncAction::Pull { name: name.clone() }
             } else {
                 SyncAction::Clone {
                     name: name.clone(),
                     remote: spec.remote.clone(),
-                    path: name.clone(),
                 }
             }
         })
@@ -86,7 +83,6 @@ mod tests {
             vec![SyncAction::Clone {
                 name: "api".to_string(),
                 remote: "git@github.com:org/api.git".to_string(),
-                path: "api".to_string(),
             }]
         );
     }
@@ -100,7 +96,6 @@ mod tests {
             actions,
             vec![SyncAction::Pull {
                 name: "api".to_string(),
-                path: "api".to_string(),
             }]
         );
     }
@@ -118,12 +113,10 @@ mod tests {
             vec![
                 SyncAction::Pull {
                     name: "api".to_string(),
-                    path: "api".to_string(),
                 },
                 SyncAction::Clone {
                     name: "web".to_string(),
                     remote: "git@github.com:org/web.git".to_string(),
-                    path: "web".to_string(),
                 },
             ]
         );

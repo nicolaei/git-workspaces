@@ -70,6 +70,22 @@ fn sync_narrows_to_explicitly_named_repos() {
 }
 
 #[test]
+fn sync_rejects_a_repo_named_more_than_once() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+
+    let result = workspace.run(&["sync", "api", "api"]);
+
+    assert!(!result.success, "expected sync to reject a repo named more than once");
+    assert!(
+        result.stdout.contains("more than once") || result.stderr.contains("more than once"),
+        "expected a clear duplicate-name error, stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+#[test]
 fn sync_keeps_the_workspace_roots_own_git_status_clean_via_the_managed_gitignore() {
     let workspace = Workspace::new();
     let remote = workspace.fixture_remote_with_commit("api");
@@ -134,5 +150,49 @@ fn sync_ensures_gitignore_even_when_nothing_new_to_clone() {
     assert!(
         gitignore.contains("/api"),
         "expected the managed block to list api, got: {gitignore}"
+    );
+}
+
+#[test]
+fn sync_reports_an_unreachable_remote_as_a_per_repo_error_and_still_syncs_the_rest() {
+    let workspace = Workspace::new();
+    let web_remote = workspace.fixture_remote_with_commit("web");
+    workspace.declares_repo("api", "/tmp/definitely-does-not-exist-git-multirepo-fixture.git");
+    workspace.declares_repo("web", web_remote.to_str().unwrap());
+
+    let result = workspace.run(&["sync"]);
+
+    assert!(!result.success, "expected overall sync to fail because api's remote is unreachable");
+    assert!(
+        result.stdout.contains("api: error:"),
+        "expected api's clone failure to be reported, got: {}",
+        result.stdout
+    );
+    assert!(workspace.repo("web").exists(), "expected web to still be cloned despite api's failure");
+}
+
+#[test]
+fn sync_reports_a_diverged_repo_as_a_per_repo_error_without_fabricating_a_merge() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+    workspace.run(&["sync"]);
+    // Diverge: a local commit not yet pushed, and a new commit on the
+    // remote it never saw — `pull --ff-only` refuses this by design.
+    workspace.repo("api").commit_new_file("a local change");
+    workspace.push_new_commit_to_fixture_remote(&remote);
+    let local_head_before = workspace.repo("api").head_commit();
+
+    let result = workspace.run(&["sync"]);
+
+    assert!(!result.success, "expected sync to fail on a diverged repo rather than merge");
+    assert!(
+        result.stdout.contains("api: error:"),
+        "expected the diverged repo's failure to be reported, got: {}",
+        result.stdout
+    );
+    assert_eq!(
+        workspace.repo("api").head_commit(), local_head_before,
+        "expected sync to leave the repo exactly where it was, not fabricate a merge commit"
     );
 }

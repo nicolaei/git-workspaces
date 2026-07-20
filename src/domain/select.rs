@@ -56,6 +56,21 @@ pub fn resolve_targets(manifest: &Manifest, args: &[String]) -> Result<Vec<Strin
     Ok(args.to_vec())
 }
 
+/// Build a `Manifest` containing only `names`, preserving their specs
+/// unchanged and dropping everything else. `names` is expected to already
+/// be validated (e.g. via `resolve_targets`) — this only filters, it
+/// doesn't check for unknown names itself.
+pub fn manifest_subset(manifest: &Manifest, names: &[String]) -> Manifest {
+    Manifest {
+        repos: manifest
+            .repos
+            .iter()
+            .filter(|(name, _)| names.contains(name))
+            .map(|(name, spec)| (name.clone(), spec.clone()))
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +128,18 @@ mod tests {
         let args = vec!["infra".to_string(), "api".to_string()];
         let targets = resolve_targets(&manifest, &args).expect("should resolve");
         assert_eq!(targets, vec!["infra".to_string(), "api".to_string()]);
+    }
+
+    #[test]
+    fn manifest_subset_keeps_only_the_named_repos() {
+        let manifest = manifest_with(&["api", "web", "infra"]);
+        let names = vec!["infra".to_string(), "api".to_string()];
+
+        let subset = manifest_subset(&manifest, &names);
+
+        assert_eq!(subset.repos.len(), 2);
+        assert!(subset.repos.contains_key("api"));
+        assert!(subset.repos.contains_key("infra"));
+        assert!(!subset.repos.contains_key("web"));
     }
 }

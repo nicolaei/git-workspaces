@@ -87,13 +87,24 @@ const BEGIN_MARKER: &str = "# >>> git multirepo managed (do not edit below) >>>"
 const END_MARKER: &str = "# <<< git multirepo managed <<<";
 
 /// Regenerate the managed block in `<workspace_root>/.gitignore` so every
-/// cloned repo path is ignored by the workspace root's own git repo.
+/// path in `paths` is ignored by the workspace root's own git repo, in the
+/// order given.
+///
+/// A single iterator, not two separate slices with different element
+/// types — callers used to hold a repo-name `Vec<String>` just to satisfy
+/// one parameter and a literal `&[&str]` for the other (e.g. `".worktrees"`)
+/// even though both lists mean exactly the same thing to this function:
+/// paths to ignore. Callers now `.chain()` whatever extra entries they need
+/// onto the repo names directly (Fowler: Data Clumps).
 ///
 /// Only the marked block is replaced; everything else in the file is left
 /// untouched. No-op if `<workspace_root>/.git` doesn't exist — the
 /// workspace root isn't itself a git repo, so there's nothing to ignore
 /// anything from.
-pub fn ensure_gitignored(workspace_root: &Path, repo_paths: &[String], extra_paths: &[&str]) -> io::Result<()> {
+pub fn ensure_gitignored<'a>(
+    workspace_root: &Path,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> io::Result<()> {
     if !workspace_root.join(".git").exists() {
         return Ok(());
     }
@@ -111,7 +122,7 @@ pub fn ensure_gitignored(workspace_root: &Path, repo_paths: &[String], extra_pat
     }
     content.push_str(BEGIN_MARKER);
     content.push('\n');
-    for path in repo_paths.iter().map(String::as_str).chain(extra_paths.iter().copied()) {
+    for path in paths {
         content.push('/');
         content.push_str(path);
         content.push('\n');
@@ -152,7 +163,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".git")).unwrap();
 
-        ensure_gitignored(dir.path(), &["api".to_string(), "web".to_string()], &[]).unwrap();
+        ensure_gitignored(dir.path(), ["api", "web"]).unwrap();
 
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
@@ -166,7 +177,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".git")).unwrap();
 
-        ensure_gitignored(dir.path(), &["api".to_string()], &[".worktrees"]).unwrap();
+        ensure_gitignored(dir.path(), ["api", ".worktrees"]).unwrap();
 
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
@@ -185,7 +196,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_gitignored(dir.path(), &["api".to_string()], &[]).unwrap();
+        ensure_gitignored(dir.path(), ["api"]).unwrap();
 
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
@@ -199,8 +210,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".git")).unwrap();
 
-        ensure_gitignored(dir.path(), &["api".to_string()], &[]).unwrap();
-        ensure_gitignored(dir.path(), &["api".to_string()], &[]).unwrap();
+        ensure_gitignored(dir.path(), ["api"]).unwrap();
+        ensure_gitignored(dir.path(), ["api"]).unwrap();
 
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
@@ -213,7 +224,7 @@ mod tests {
     fn is_a_noop_when_workspace_root_is_not_a_git_repo() {
         let dir = tempfile::tempdir().unwrap();
 
-        ensure_gitignored(dir.path(), &["api".to_string()], &[]).unwrap();
+        ensure_gitignored(dir.path(), ["api"]).unwrap();
 
         assert!(!dir.path().join(".gitignore").exists());
     }

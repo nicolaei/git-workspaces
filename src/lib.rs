@@ -122,13 +122,19 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
     match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
             None => ExitCode::SUCCESS,
-            Some(Command::List) => run_list(cwd, out),
-            Some(Command::Sync { repos }) => run_sync(cwd, &repos, out),
-            Some(Command::Status { repos }) => run_status(cwd, &repos, out),
-            Some(Command::Exec { repos, parallel, command }) => run_exec(cwd, &repos, &command, parallel, out),
-            Some(Command::Add { path, remote, branch }) => run_add(cwd, &path, &remote, branch.as_deref(), out),
-            Some(Command::Checkout { branch, create, repos }) => run_checkout(cwd, &branch, create, &repos, out),
-            Some(Command::Worktree { action }) => run_worktree(cwd, action, out),
+            Some(Command::List) => run_list(cwd, out).unwrap_or_else(|c| c),
+            Some(Command::Sync { repos }) => run_sync(cwd, &repos, out).unwrap_or_else(|c| c),
+            Some(Command::Status { repos }) => run_status(cwd, &repos, out).unwrap_or_else(|c| c),
+            Some(Command::Exec { repos, parallel, command }) => {
+                run_exec(cwd, &repos, &command, parallel, out).unwrap_or_else(|c| c)
+            }
+            Some(Command::Add { path, remote, branch }) => {
+                run_add(cwd, &path, &remote, branch.as_deref(), out).unwrap_or_else(|c| c)
+            }
+            Some(Command::Checkout { branch, create, repos }) => {
+                run_checkout(cwd, &branch, create, &repos, out).unwrap_or_else(|c| c)
+            }
+            Some(Command::Worktree { action }) => run_worktree(cwd, action, out).unwrap_or_else(|c| c),
             Some(Command::Init { path }) => run_init(cwd, path.as_deref(), out),
         },
         Err(e) => {
@@ -144,51 +150,50 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
     }
 }
 
-fn run_list(cwd: &Path, out: &mut impl Write) -> ExitCode {
-    let manifest = match load_manifest(cwd, out) {
-        Ok((_, manifest)) => manifest,
-        Err(code) => return code,
-    };
+fn run_list(cwd: &Path, out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (_, manifest) = load_manifest(cwd, out)?;
 
     for name in manifest.repos.keys() {
         writeln!(out, "{name}").ok();
     }
 
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
-fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
 
-    if let Some(unknown) = repos.iter().find(|name| !manifest.repos.contains_key(*name)) {
-        writeln!(out, "error: unknown repo \"{unknown}\" in multirepo.toml").ok();
-        return ExitCode::FAILURE;
+    // Delegates to the same narrowing logic status/checkout/exec use,
+    // rather than reimplementing it — the old inline version missed the
+    // duplicate-name check `resolve_targets` already provides (Fowler:
+    // Divergent Change).
+    let targets = domain::select::resolve_targets(&manifest, repos).map_err(|e| {
+        writeln!(out, "error: {e}").ok();
+        ExitCode::FAILURE
+    })?;
+    let target_manifest = domain::select::manifest_subset(&manifest, &targets);
+
+    let actions = domain::plan::plan_sync(&target_manifest, &|name: &str| root.join(name).exists());
+    let failed = execute_sync_actions(&root, &actions, out);
+
+    if !manifest.repos.is_empty() {
+        update_gitignore(&root, &manifest, &[], out)?;
     }
 
-    let targets: domain::manifest::Manifest = if repos.is_empty() {
-        manifest.clone()
-    } else {
-        domain::manifest::Manifest {
-            repos: manifest
-                .repos
-                .iter()
-                .filter(|(name, _)| repos.contains(name))
-                .map(|(name, spec)| (name.clone(), spec.clone()))
-                .collect(),
-        }
-    };
+    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
 
-    let actions = domain::plan::plan_sync(&targets, &|name: &str| root.join(name).exists());
-
+/// Clone or pull every planned action, collecting-and-continuing rather
+/// than aborting on the first failure — one repo's clone/pull error never
+/// stops the rest. Returns whether anything failed. Split out of `run_sync`
+/// itself (Fowler: Long Function — Extract Function).
+fn execute_sync_actions(root: &Path, actions: &[domain::plan::SyncAction], out: &mut impl Write) -> bool {
     let mut failed = false;
 
-    for action in &actions {
+    for action in actions {
         match action {
-            domain::plan::SyncAction::Clone { name, remote, path } => {
-                let full_path = root.join(path);
+            domain::plan::SyncAction::Clone { name, remote } => {
+                let full_path = root.join(name);
                 match shell::git::clone(remote, &full_path) {
                     Ok(()) => {
                         writeln!(out, "{name}: cloned").ok();
@@ -199,8 +204,8 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
                     }
                 }
             }
-            domain::plan::SyncAction::Pull { name, path } => {
-                let full_path = root.join(path);
+            domain::plan::SyncAction::Pull { name } => {
+                let full_path = root.join(name);
                 match shell::git::pull(&full_path) {
                     Ok(()) => {
                         writeln!(out, "{name}: pulled").ok();
@@ -214,19 +219,25 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
         }
     }
 
-    if !manifest.repos.is_empty() {
-        let all_repo_paths: Vec<String> = manifest.repos.keys().cloned().collect();
-        if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths, &[]) {
-            writeln!(out, "error: failed to update .gitignore: {e}").ok();
-            failed = true;
-        }
-    }
+    failed
+}
 
-    if failed {
+/// Regenerate the workspace root's managed `.gitignore` block for every
+/// repo in `manifest`, plus any `extra` entries (e.g. `.worktrees`).
+/// `sync`/`add`/`worktree add` each used to repeat the same
+/// collect-keys-then-call block (Fowler: Duplicate Code — Extract
+/// Function).
+fn update_gitignore(
+    root: &Path,
+    manifest: &domain::manifest::Manifest,
+    extra: &[&str],
+    out: &mut impl Write,
+) -> Result<(), ExitCode> {
+    let paths = manifest.repos.keys().map(String::as_str).chain(extra.iter().copied());
+    shell::fs::ensure_gitignored(root, paths).map_err(|e| {
+        writeln!(out, "error: failed to update .gitignore: {e}").ok();
         ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    })
 }
 
 /// Bootstrap a brand-new workspace at `path` (cwd if omitted), creating the
@@ -274,42 +285,33 @@ fn run_init(cwd: &Path, path: Option<&str>, out: &mut impl Write) -> ExitCode {
 /// `multirepo.toml`. The duplicate-path check happens before the clone so
 /// a repeat `add` on an already-declared name fails fast without touching
 /// the filesystem (logged decision, story F).
-fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
 
     if manifest.repos.contains_key(path) {
         writeln!(out, "error: \"{path}\" is already declared in multirepo.toml").ok();
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
 
     // Captured now, before the clone (which can take a while) — the baseline
     // `write_manifest_if_unchanged` checks against right before writing, to
     // detect a concurrently running `add` racing on the same manifest file.
     let manifest_path = root.join("multirepo.toml");
-    let baseline = match shell::fs::read_to_string(&manifest_path) {
-        Ok(contents) => contents,
-        Err(e) => {
-            writeln!(out, "error: failed to read {}: {e}", manifest_path.display()).ok();
-            return ExitCode::FAILURE;
-        }
-    };
+    let baseline = shell::fs::read_to_string(&manifest_path).map_err(|e| {
+        writeln!(out, "error: failed to read {}: {e}", manifest_path.display()).ok();
+        ExitCode::FAILURE
+    })?;
 
     let full_path = root.join(path);
-    if let Err(e) = shell::git::clone(remote, &full_path) {
+    shell::git::clone(remote, &full_path).map_err(|e| {
         writeln!(out, "error: {e}").ok();
-        return ExitCode::FAILURE;
-    }
+        ExitCode::FAILURE
+    })?;
 
-    let updated = match domain::manifest::add_repo(&manifest, path, remote, branch.map(str::to_string)) {
-        Ok(updated) => updated,
-        Err(e) => {
-            writeln!(out, "error: {e}").ok();
-            return ExitCode::FAILURE;
-        }
-    };
+    let updated = domain::manifest::add_repo(&manifest, path, remote, branch.map(str::to_string)).map_err(|e| {
+        writeln!(out, "error: {e}").ok();
+        ExitCode::FAILURE
+    })?;
 
     let serialized = domain::manifest::serialize_manifest(&updated);
     match shell::fs::write_manifest_if_unchanged(&manifest_path, &baseline, &serialized) {
@@ -321,22 +323,18 @@ fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut
                 full_path.display()
             )
             .ok();
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
         Err(e) => {
             writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     }
 
-    let all_repo_paths: Vec<String> = updated.repos.keys().cloned().collect();
-    if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths, &[]) {
-        writeln!(out, "error: failed to update .gitignore: {e}").ok();
-        return ExitCode::FAILURE;
-    }
+    update_gitignore(&root, &updated, &[], out)?;
 
     writeln!(out, "{path}: cloned and added to multirepo.toml").ok();
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Checkout (or create) `branch` across every selected repo. A failure in
@@ -344,19 +342,13 @@ fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut
 /// `sync`/`exec`, so a multi-repo checkout reports every repo's outcome
 /// instead of leaving the caller guessing which ones already moved (logged
 /// decision, story G).
-fn run_checkout(cwd: &Path, branch: &str, create: bool, repos: &[String], out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+fn run_checkout(cwd: &Path, branch: &str, create: bool, repos: &[String], out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
 
-    let targets = match domain::select::resolve_targets(&manifest, repos) {
-        Ok(targets) => targets,
-        Err(e) => {
-            writeln!(out, "error: {e}").ok();
-            return ExitCode::FAILURE;
-        }
-    };
+    let targets = domain::select::resolve_targets(&manifest, repos).map_err(|e| {
+        writeln!(out, "error: {e}").ok();
+        ExitCode::FAILURE
+    })?;
 
     let mut failed = false;
     for name in &targets {
@@ -379,14 +371,10 @@ fn run_checkout(cwd: &Path, branch: &str, create: bool, repos: &[String], out: &
         }
     }
 
-    if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
 }
 
-fn run_worktree(cwd: &Path, action: WorktreeAction, out: &mut impl Write) -> ExitCode {
+fn run_worktree(cwd: &Path, action: WorktreeAction, out: &mut impl Write) -> Result<ExitCode, ExitCode> {
     match action {
         WorktreeAction::Add { name, branch } => run_worktree_add(cwd, &name, branch.as_deref(), out),
         WorktreeAction::List => run_worktree_list(cwd, out),
@@ -406,15 +394,12 @@ fn run_worktree(cwd: &Path, action: WorktreeAction, out: &mut impl Write) -> Exi
 /// worktree from a failed run would sit there half-finished with no
 /// manifest copy — worse than failing loudly on the first repo that can't
 /// be added (logged decision, story H).
-fn run_worktree_add(cwd: &Path, name: &str, branch: Option<&str>, out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+fn run_worktree_add(cwd: &Path, name: &str, branch: Option<&str>, out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
 
     if let Some(missing) = manifest.repos.keys().find(|repo| !root.join(repo).exists()) {
         writeln!(out, "error: \"{missing}\" is not cloned yet — run `git multirepo sync` first").ok();
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
 
     let branch = branch.unwrap_or(name);
@@ -424,34 +409,30 @@ fn run_worktree_add(cwd: &Path, name: &str, branch: Option<&str>, out: &mut impl
         let repo_path = root.join(repo);
         let target_path = root.join(rel_path);
         if let Some(parent) = target_path.parent() {
-            if let Err(e) = shell::fs::create_dir_all(parent) {
+            shell::fs::create_dir_all(parent).map_err(|e| {
                 writeln!(out, "error: failed to create {}: {e}", parent.display()).ok();
-                return ExitCode::FAILURE;
-            }
+                ExitCode::FAILURE
+            })?;
         }
-        if let Err(e) = shell::git::worktree_add(&repo_path, &target_path, branch) {
+        shell::git::worktree_add(&repo_path, &target_path, branch).map_err(|e| {
             writeln!(out, "{repo}: error: {e}").ok();
-            return ExitCode::FAILURE;
-        }
+            ExitCode::FAILURE
+        })?;
         writeln!(out, "{repo}: worktree added at {}", target_path.display()).ok();
     }
 
     let worktree_root = root.join(".worktrees").join(name);
     let manifest_path = worktree_root.join("multirepo.toml");
     let serialized = domain::manifest::serialize_manifest(&manifest);
-    if let Err(e) = shell::fs::write_string(&manifest_path, &serialized) {
+    shell::fs::write_string(&manifest_path, &serialized).map_err(|e| {
         writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
-        return ExitCode::FAILURE;
-    }
+        ExitCode::FAILURE
+    })?;
 
-    let all_repo_paths: Vec<String> = manifest.repos.keys().cloned().collect();
-    if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths, &[".worktrees"]) {
-        writeln!(out, "error: failed to update .gitignore: {e}").ok();
-        return ExitCode::FAILURE;
-    }
+    update_gitignore(&root, &manifest, &[".worktrees"], out)?;
 
     writeln!(out, "{name}: worktree added ({branch})").ok();
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 /// List named worktrees under `.worktrees/`. A worktree missing a
@@ -459,20 +440,14 @@ fn run_worktree_add(cwd: &Path, name: &str, branch: Option<&str>, out: &mut impl
 /// rather than hidden — a partial worktree (e.g. from an interrupted
 /// `add`) still needs to be visible so it can be cleaned up (logged
 /// decision, story H).
-fn run_worktree_list(cwd: &Path, out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+fn run_worktree_list(cwd: &Path, out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
 
     let worktrees_dir = root.join(".worktrees");
-    let names = match shell::fs::list_subdirectory_names(&worktrees_dir) {
-        Ok(names) => names,
-        Err(e) => {
-            writeln!(out, "error: failed to read {}: {e}", worktrees_dir.display()).ok();
-            return ExitCode::FAILURE;
-        }
-    };
+    let names = shell::fs::list_subdirectory_names(&worktrees_dir).map_err(|e| {
+        writeln!(out, "error: failed to read {}: {e}", worktrees_dir.display()).ok();
+        ExitCode::FAILURE
+    })?;
 
     for name in &names {
         let layout = domain::worktree::worktree_layout(&manifest, name);
@@ -494,7 +469,7 @@ fn run_worktree_list(cwd: &Path, out: &mut impl Write) -> ExitCode {
         }
     }
 
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Remove a named worktree: `git worktree remove` per repo from its
@@ -504,11 +479,19 @@ fn run_worktree_list(cwd: &Path, out: &mut impl Write) -> ExitCode {
 /// cleanup of one atomic unit, not a fan-out command where partial
 /// completion across independent repos is acceptable (logged decision,
 /// story H).
-fn run_worktree_remove(cwd: &Path, name: &str, out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+///
+/// Errors on a `name` that was never added — same convention as `git
+/// worktree remove`/`git branch -d`/`rm`: a remove command fails loudly on
+/// a nonexistent target by default, and silent idempotent success is
+/// always an opt-in (`rm -f`), never the default (logged decision).
+fn run_worktree_remove(cwd: &Path, name: &str, out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
+
+    let worktree_root = root.join(".worktrees").join(name);
+    if !worktree_root.exists() {
+        writeln!(out, "error: no worktree named \"{name}\"").ok();
+        return Err(ExitCode::FAILURE);
+    }
 
     let layout = domain::worktree::worktree_layout(&manifest, name);
 
@@ -518,38 +501,29 @@ fn run_worktree_remove(cwd: &Path, name: &str, out: &mut impl Write) -> ExitCode
         if !target_path.exists() {
             continue;
         }
-        if let Err(e) = shell::git::worktree_remove(&repo_path, &target_path) {
+        shell::git::worktree_remove(&repo_path, &target_path).map_err(|e| {
             writeln!(out, "{repo}: error: {e}").ok();
-            return ExitCode::FAILURE;
-        }
+            ExitCode::FAILURE
+        })?;
         writeln!(out, "{repo}: worktree removed").ok();
     }
 
-    let worktree_root = root.join(".worktrees").join(name);
-    if worktree_root.exists() {
-        if let Err(e) = shell::fs::remove_dir_all(&worktree_root) {
-            writeln!(out, "error: failed to remove {}: {e}", worktree_root.display()).ok();
-            return ExitCode::FAILURE;
-        }
-    }
+    shell::fs::remove_dir_all(&worktree_root).map_err(|e| {
+        writeln!(out, "error: failed to remove {}: {e}", worktree_root.display()).ok();
+        ExitCode::FAILURE
+    })?;
 
     writeln!(out, "{name}: worktree removed").ok();
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
-fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
 
-    let targets = match domain::select::resolve_targets(&manifest, repos) {
-        Ok(targets) => targets,
-        Err(e) => {
-            writeln!(out, "error: {e}").ok();
-            return ExitCode::FAILURE;
-        }
-    };
+    let targets = domain::select::resolve_targets(&manifest, repos).map_err(|e| {
+        writeln!(out, "error: {e}").ok();
+        ExitCode::FAILURE
+    })?;
 
     let mut raw_states = std::collections::BTreeMap::new();
     for name in &targets {
@@ -560,7 +534,7 @@ fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
             }
             Err(e) => {
                 writeln!(out, "{name}: error: {e}").ok();
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         }
     }
@@ -570,7 +544,7 @@ fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
         writeln!(out, "{line}").ok();
     }
 
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Run `command` in each selected repo's directory. Sequential by default;
@@ -578,24 +552,32 @@ fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
 /// one repo never aborts the others — every repo runs to completion and
 /// gets a line in the summary, and the overall exit code is failure if any
 /// repo failed (or couldn't even be spawned).
-fn run_exec(cwd: &Path, repos: &[String], command: &[String], parallel: bool, out: &mut impl Write) -> ExitCode {
-    let (root, manifest) = match load_manifest(cwd, out) {
-        Ok(pair) => pair,
-        Err(code) => return code,
-    };
+fn run_exec(cwd: &Path, repos: &[String], command: &[String], parallel: bool, out: &mut impl Write) -> Result<ExitCode, ExitCode> {
+    let (root, manifest) = load_manifest(cwd, out)?;
 
-    let targets = match domain::select::resolve_targets(&manifest, repos) {
-        Ok(targets) => targets,
-        Err(e) => {
-            writeln!(out, "error: {e}").ok();
-            return ExitCode::FAILURE;
-        }
-    };
+    let targets = domain::select::resolve_targets(&manifest, repos).map_err(|e| {
+        writeln!(out, "error: {e}").ok();
+        ExitCode::FAILURE
+    })?;
 
     let results = run_command_across(&root, &targets, command, parallel);
 
+    let failed = print_exec_output(&results, out);
+    print_exec_summary(&results, out);
+
+    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
+
+type ExecResults = [(String, Result<shell::exec::ExecOutcome, shell::exec::ExecError>)];
+
+/// Stream each repo's captured stdout/stderr in target order. Returns
+/// whether any repo's command exited non-zero or failed to spawn. Split
+/// from `print_exec_summary` — `run_exec` used to interleave "emit live
+/// output" and "emit summary" in one function (Fowler: Long Function —
+/// Extract Function).
+fn print_exec_output(results: &ExecResults, out: &mut impl Write) -> bool {
     let mut failed = false;
-    for (_name, result) in &results {
+    for (_name, result) in results {
         match result {
             Ok(outcome) => {
                 if !outcome.stdout.is_empty() {
@@ -611,10 +593,16 @@ fn run_exec(cwd: &Path, repos: &[String], command: &[String], parallel: bool, ou
             Err(_) => failed = true,
         }
     }
+    failed
+}
 
+/// Print the trailing `Summary:` block — one line per repo naming its exit
+/// code or spawn error (Fowler: Long Function — Extract Function, split
+/// from `print_exec_output`).
+fn print_exec_summary(results: &ExecResults, out: &mut impl Write) {
     writeln!(out).ok();
     writeln!(out, "Summary:").ok();
-    for (name, result) in &results {
+    for (name, result) in results {
         match result {
             Ok(outcome) => {
                 writeln!(out, "{name}: exit {}", outcome.exit_code).ok();
@@ -623,12 +611,6 @@ fn run_exec(cwd: &Path, repos: &[String], command: &[String], parallel: bool, ou
                 writeln!(out, "{name}: error: {e}").ok();
             }
         }
-    }
-
-    if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
     }
 }
 

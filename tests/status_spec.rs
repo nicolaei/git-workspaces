@@ -153,3 +153,20 @@ fn status_errors_on_an_unknown_repo_name() {
         result.stdout
     );
 }
+
+#[test]
+fn status_errors_clearly_on_a_repo_that_has_never_been_synced() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+    // Deliberately skip `sync` — api is declared but never cloned onto disk.
+
+    let result = workspace.run(&["status"]);
+
+    assert!(!result.success, "expected status to fail for a repo that was never cloned");
+    assert!(
+        result.stdout.contains("api"),
+        "expected the error to name the uncloned repo, got: {}",
+        result.stdout
+    );
+}

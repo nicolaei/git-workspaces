@@ -100,3 +100,49 @@ fn checkout_without_create_fails_clearly_when_the_branch_does_not_exist() {
     );
     assert_eq!(workspace.repo("api").current_branch(), "main");
 }
+
+#[test]
+fn checkout_errors_on_an_unknown_repo_name() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+    workspace.run(&["sync"]);
+
+    let result = workspace.run(&["checkout", "feature", "nonexistent"]);
+
+    assert!(!result.success, "expected checkout to fail for an unknown repo");
+    assert!(
+        result.stdout.contains("nonexistent") || result.stderr.contains("nonexistent"),
+        "expected error to name the unknown repo, got: {}",
+        result.stdout
+    );
+}
+
+#[test]
+fn checkout_reports_every_repos_outcome_when_some_have_the_branch_and_some_dont() {
+    let workspace = Workspace::new();
+    let api_remote = workspace.fixture_remote_with_commit("api");
+    let web_remote = workspace.fixture_remote_with_commit("web");
+    workspace.declares_repo("api", api_remote.to_str().unwrap());
+    workspace.declares_repo("web", web_remote.to_str().unwrap());
+    workspace.run(&["sync"]);
+    // Only api has "feature" as a real branch — web never gets it.
+    workspace.repo("api").checkout_new_branch("feature");
+    workspace.repo("api").checkout_existing_branch("main");
+
+    let result = workspace.run(&["checkout", "feature"]);
+
+    assert!(!result.success, "expected overall checkout to fail because web lacks the branch");
+    assert_eq!(workspace.repo("api").current_branch(), "feature", "expected api to still move even though web failed");
+    assert_eq!(workspace.repo("web").current_branch(), "main", "expected web to stay put on failure");
+    assert!(
+        result.stdout.contains("api: checked out feature"),
+        "expected api's success to be reported, got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("web: error:"),
+        "expected web's failure to be reported, got: {}",
+        result.stdout
+    );
+}

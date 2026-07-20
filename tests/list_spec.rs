@@ -41,3 +41,29 @@ fn list_reports_a_clear_error_when_no_manifest_is_found() {
         result.stdout
     );
 }
+
+#[test]
+fn list_succeeds_with_empty_output_for_an_empty_manifest() {
+    let workspace = Workspace::new();
+    std::fs::write(workspace.root().join("multirepo.toml"), "").expect("write empty manifest");
+
+    let result = workspace.run(&["list"]);
+
+    assert!(result.success, "expected list to succeed on an empty manifest, stderr={}", result.stderr);
+    assert!(result.stdout.trim().is_empty(), "expected no output, got: {}", result.stdout);
+}
+
+#[test]
+fn list_reports_a_clear_error_on_malformed_toml() {
+    let workspace = Workspace::new();
+    std::fs::write(workspace.root().join("multirepo.toml"), "this is not [ valid toml").expect("write malformed manifest");
+
+    let result = workspace.run(&["list"]);
+
+    assert!(!result.success, "expected list to fail on malformed toml");
+    assert!(
+        result.stdout.contains("multirepo.toml"),
+        "expected the error to reference the manifest file, got: {}",
+        result.stdout
+    );
+}

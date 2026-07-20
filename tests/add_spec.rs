@@ -138,3 +138,17 @@ fn add_gitignores_the_cloned_repo() {
         "expected the managed block to list api, got: {gitignore}"
     );
 }
+
+#[test]
+fn add_leaves_the_manifest_untouched_when_the_remote_is_unreachable() {
+    let workspace = Workspace::new();
+    empty_manifest(&workspace);
+    let before = std::fs::read_to_string(workspace.root().join("multirepo.toml")).expect("read manifest before add");
+
+    let result = workspace.run(&["add", "api", "/tmp/definitely-does-not-exist-git-multirepo-fixture.git"]);
+
+    assert!(!result.success, "expected add to fail when the remote is unreachable");
+    assert!(!workspace.repo("api").exists(), "expected no partial clone to be left behind");
+    let after = std::fs::read_to_string(workspace.root().join("multirepo.toml")).expect("read manifest after failed add");
+    assert_eq!(after, before, "expected the manifest to be left exactly as it was");
+}
