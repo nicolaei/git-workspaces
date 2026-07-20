@@ -35,6 +35,26 @@ pub fn pull(path: &Path) -> Result<(), GitError> {
         .args(["pull", "--ff-only"]))
 }
 
+/// `git -C <path> checkout <branch>`. Fails clearly (surfacing git's own
+/// error text) if the branch doesn't exist locally — no auto-create.
+pub fn checkout(path: &Path, branch: &str) -> Result<(), GitError> {
+    run(Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["checkout", branch]))
+}
+
+/// `git -C <path> checkout -b <branch>`. Fails clearly (surfacing git's own
+/// error text) if the branch already exists — checkout never silently
+/// moves onto an existing branch when `--create` was asked for (logged
+/// decision, story G).
+pub fn create_branch(path: &Path, branch: &str) -> Result<(), GitError> {
+    run(Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["checkout", "-b", branch]))
+}
+
 /// Gather the raw per-repo state `domain::status::compute_status` needs:
 /// current branch, dirty file count, and ahead/behind vs upstream.
 ///

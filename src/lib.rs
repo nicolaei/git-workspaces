@@ -59,6 +59,19 @@ enum Command {
         #[arg(long)]
         branch: Option<String>,
     },
+    /// Checkout (creating if `--create`) the same branch name across
+    /// selected repos. Whole workspace by default; pass repo names to
+    /// narrow. Without `--create`, fails clearly if the branch doesn't
+    /// exist in a repo. With `--create`, fails clearly if it already does.
+    Checkout {
+        /// The branch name to check out (or create).
+        branch: String,
+        /// Create the branch instead of checking out an existing one.
+        #[arg(long)]
+        create: bool,
+        /// Repo names to narrow to. Omit to act on the whole workspace.
+        repos: Vec<String>,
+    },
 }
 
 /// The one true entrypoint. `main.rs` is a thin wrapper around this.
@@ -74,6 +87,7 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
             Some(Command::Status { repos }) => run_status(cwd, &repos, out),
             Some(Command::Exec { repos, parallel, command }) => run_exec(cwd, &repos, &command, parallel, out),
             Some(Command::Add { path, remote, branch }) => run_add(cwd, &path, &remote, branch.as_deref(), out),
+            Some(Command::Checkout { branch, create, repos }) => run_checkout(cwd, &branch, create, &repos, out),
         },
         Err(e) => {
             // clap's Error already renders --help/--version/usage-error text
@@ -213,6 +227,53 @@ fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut
 
     writeln!(out, "{path}: cloned and added to workspaces.toml").ok();
     ExitCode::SUCCESS
+}
+
+/// Checkout (or create) `branch` across every selected repo. A failure in
+/// one repo never aborts the others — same collect-and-continue family as
+/// `sync`/`exec`, so a multi-repo checkout reports every repo's outcome
+/// instead of leaving the caller guessing which ones already moved (logged
+/// decision, story G).
+fn run_checkout(cwd: &Path, branch: &str, create: bool, repos: &[String], out: &mut impl Write) -> ExitCode {
+    let (root, manifest) = match load_manifest(cwd, out) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    let targets = match domain::select::resolve_targets(&manifest, repos) {
+        Ok(targets) => targets,
+        Err(e) => {
+            writeln!(out, "error: {e}").ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut failed = false;
+    for name in &targets {
+        let path = root.join(name);
+        let result = if create {
+            shell::git::create_branch(&path, branch)
+        } else {
+            shell::git::checkout(&path, branch)
+        };
+
+        match result {
+            Ok(()) => {
+                let verb = if create { "created and checked out" } else { "checked out" };
+                writeln!(out, "{name}: {verb} {branch}").ok();
+            }
+            Err(e) => {
+                writeln!(out, "{name}: error: {e}").ok();
+                failed = true;
+            }
+        }
+    }
+
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {

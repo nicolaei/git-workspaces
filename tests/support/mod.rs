@@ -286,6 +286,14 @@ impl RepoHandle {
         run_git(&self.path, &["checkout", "-b", name]).expect("checkout new branch");
         self
     }
+
+    /// Check out an already-existing branch — used by checkout tests to
+    /// move a repo back to a known branch before exercising the command
+    /// under test.
+    pub fn checkout_existing_branch(&self, name: &str) -> &Self {
+        run_git(&self.path, &["checkout", name]).expect("checkout existing branch");
+        self
+    }
 }
 
 pub struct RunResult {
