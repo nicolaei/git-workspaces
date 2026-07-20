@@ -18,6 +18,40 @@ pub fn write_string(path: &Path, contents: &str) -> io::Result<()> {
     std::fs::write(path, contents)
 }
 
+/// Outcome of `write_manifest_if_unchanged`: whether the write happened, or
+/// was refused because the file no longer matches the caller's baseline.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ManifestWriteOutcome {
+    Written,
+    ConcurrentModification,
+}
+
+/// Optimistic-concurrency guard for `add` (the only command that reads,
+/// modifies, and rewrites `multirepo.toml`). Re-reads the file immediately
+/// before writing and compares it byte-for-byte against `baseline` — the
+/// raw text the caller loaded at the start of its command. A mismatch means
+/// something else (a concurrently running `add`) wrote to the file in
+/// between, so writing `contents` now would silently discard that other
+/// change. Refuses the write and reports `ConcurrentModification` instead
+/// of clobbering it.
+///
+/// `baseline` must be the exact raw text read from disk, not a
+/// re-serialization of the parsed manifest — comparing against a
+/// re-serialized form would false-positive on any formatting the parser
+/// normalizes away (comments, key order, whitespace).
+pub fn write_manifest_if_unchanged(
+    path: &Path,
+    baseline: &str,
+    contents: &str,
+) -> io::Result<ManifestWriteOutcome> {
+    let current = std::fs::read_to_string(path)?;
+    if current != baseline {
+        return Ok(ManifestWriteOutcome::ConcurrentModification);
+    }
+    std::fs::write(path, contents)?;
+    Ok(ManifestWriteOutcome::Written)
+}
+
 /// Real recursive directory creation (used by `worktree add` to ensure a
 /// target's parent directories exist before git creates the worktree
 /// itself).
@@ -182,5 +216,38 @@ mod tests {
         ensure_gitignored(dir.path(), &["api".to_string()], &[]).unwrap();
 
         assert!(!dir.path().join(".gitignore").exists());
+    }
+
+    #[test]
+    fn write_manifest_if_unchanged_writes_when_the_file_still_matches_the_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multirepo.toml");
+        std::fs::write(&path, "baseline").unwrap();
+
+        let outcome = write_manifest_if_unchanged(&path, "baseline", "updated").unwrap();
+
+        assert_eq!(outcome, ManifestWriteOutcome::Written);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated");
+    }
+
+    #[test]
+    fn write_manifest_if_unchanged_refuses_when_the_file_changed_since_the_baseline_was_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multirepo.toml");
+        std::fs::write(&path, "baseline").unwrap();
+
+        // Simulate a concurrent writer landing between the caller's read and
+        // this write — the file on disk no longer matches what the caller
+        // loaded.
+        std::fs::write(&path, "someone else's concurrent edit").unwrap();
+
+        let outcome = write_manifest_if_unchanged(&path, "baseline", "updated").unwrap();
+
+        assert_eq!(outcome, ManifestWriteOutcome::ConcurrentModification);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "someone else's concurrent edit",
+            "expected the concurrent writer's content to survive, not be clobbered"
+        );
     }
 }

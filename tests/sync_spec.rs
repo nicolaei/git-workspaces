@@ -103,3 +103,36 @@ fn sync_keeps_the_workspace_roots_own_git_status_clean_via_the_managed_gitignore
         "expected clean git status after sync, got: {status}"
     );
 }
+
+#[test]
+fn sync_ensures_gitignore_even_when_nothing_new_to_clone() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+    workspace.init_as_git_repo();
+
+    let first = workspace.run(&["sync"]);
+    assert!(first.success, "expected first sync to clone api, stderr={}", first.stderr);
+
+    // Simulate a workspace whose .gitignore predates this clone (e.g. it was
+    // added outside of sync's clone path) by removing the managed file.
+    std::fs::remove_file(workspace.root().join(".gitignore"))
+        .expect("remove gitignore to simulate a workspace missing it");
+
+    // Second sync finds api already on disk — only a Pull action, no Clone
+    // action — and must still (re)write the managed .gitignore block rather
+    // than gating that step on having cloned something new in this call.
+    let second = workspace.run(&["sync"]);
+    assert!(
+        second.success,
+        "expected second sync to succeed, stdout={} stderr={}",
+        second.stdout, second.stderr
+    );
+
+    let gitignore = std::fs::read_to_string(workspace.root().join(".gitignore"))
+        .expect("expected sync to (re)write .gitignore even with nothing new to clone");
+    assert!(
+        gitignore.contains("/api"),
+        "expected the managed block to list api, got: {gitignore}"
+    );
+}

@@ -119,3 +119,22 @@ fn list_and_sync_reflect_a_repo_added_in_a_prior_process() {
         sync_result.stdout, sync_result.stderr
     );
 }
+
+#[test]
+fn add_gitignores_the_cloned_repo() {
+    let workspace = Workspace::new();
+    empty_manifest(&workspace);
+    workspace.init_as_git_repo();
+    let remote = workspace.fixture_remote_with_commit("api");
+
+    let result = workspace.run(&["add", "api", remote.to_str().unwrap()]);
+
+    assert!(result.success, "expected add to succeed, stderr={}", result.stderr);
+
+    let gitignore = std::fs::read_to_string(workspace.root().join(".gitignore"))
+        .expect("expected add to write a managed .gitignore, not just clone+register");
+    assert!(
+        gitignore.contains("/api"),
+        "expected the managed block to list api, got: {gitignore}"
+    );
+}

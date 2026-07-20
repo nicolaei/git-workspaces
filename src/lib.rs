@@ -184,7 +184,6 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
     let actions = domain::plan::plan_sync(&targets, &|name: &str| root.join(name).exists());
 
     let mut failed = false;
-    let mut cloned_paths: Vec<String> = Vec::new();
 
     for action in &actions {
         match action {
@@ -193,7 +192,6 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
                 match shell::git::clone(remote, &full_path) {
                     Ok(()) => {
                         writeln!(out, "{name}: cloned").ok();
-                        cloned_paths.push(path.clone());
                     }
                     Err(e) => {
                         writeln!(out, "{name}: error: {e}").ok();
@@ -216,7 +214,7 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
         }
     }
 
-    if !cloned_paths.is_empty() {
+    if !manifest.repos.is_empty() {
         let all_repo_paths: Vec<String> = manifest.repos.keys().cloned().collect();
         if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths, &[]) {
             writeln!(out, "error: failed to update .gitignore: {e}").ok();
@@ -287,6 +285,18 @@ fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut
         return ExitCode::FAILURE;
     }
 
+    // Captured now, before the clone (which can take a while) — the baseline
+    // `write_manifest_if_unchanged` checks against right before writing, to
+    // detect a concurrently running `add` racing on the same manifest file.
+    let manifest_path = root.join("multirepo.toml");
+    let baseline = match shell::fs::read_to_string(&manifest_path) {
+        Ok(contents) => contents,
+        Err(e) => {
+            writeln!(out, "error: failed to read {}: {e}", manifest_path.display()).ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
     let full_path = root.join(path);
     if let Err(e) = shell::git::clone(remote, &full_path) {
         writeln!(out, "error: {e}").ok();
@@ -301,10 +311,27 @@ fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut
         }
     };
 
-    let manifest_path = root.join("multirepo.toml");
     let serialized = domain::manifest::serialize_manifest(&updated);
-    if let Err(e) = shell::fs::write_string(&manifest_path, &serialized) {
-        writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
+    match shell::fs::write_manifest_if_unchanged(&manifest_path, &baseline, &serialized) {
+        Ok(shell::fs::ManifestWriteOutcome::Written) => {}
+        Ok(shell::fs::ManifestWriteOutcome::ConcurrentModification) => {
+            writeln!(
+                out,
+                "error: multirepo.toml changed on disk since it was read — refusing to overwrite a concurrent change. {path} was already cloned to {}; add it to multirepo.toml by hand, or remove the directory and re-run `git multirepo add`.",
+                full_path.display()
+            )
+            .ok();
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let all_repo_paths: Vec<String> = updated.repos.keys().cloned().collect();
+    if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths, &[]) {
+        writeln!(out, "error: failed to update .gitignore: {e}").ok();
         return ExitCode::FAILURE;
     }
 
