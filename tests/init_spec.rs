@@ -14,15 +14,15 @@ fn init_in_a_fresh_dir_creates_manifest_and_git_repo() {
         result.stdout, result.stderr
     );
     assert!(
-        workspace.root().join("workspace.toml").exists(),
-        "expected workspace.toml to be created"
+        workspace.root().join("multirepo.toml").exists(),
+        "expected multirepo.toml to be created"
     );
     assert!(
         workspace.root().join(".git").exists(),
         "expected .git to be created"
     );
 
-    let manifest = std::fs::read_to_string(workspace.root().join("workspace.toml"))
+    let manifest = std::fs::read_to_string(workspace.root().join("multirepo.toml"))
         .expect("read manifest after init");
     assert!(manifest.is_empty(), "expected a genuinely empty manifest, got: {manifest:?}");
 
@@ -38,7 +38,7 @@ fn init_in_a_fresh_dir_creates_manifest_and_git_repo() {
 fn init_refuses_to_clobber_an_existing_manifest() {
     let workspace = Workspace::new();
     workspace.declares_repo("api", "git@github.com:org/api.git");
-    let before = std::fs::read_to_string(workspace.root().join("workspace.toml"))
+    let before = std::fs::read_to_string(workspace.root().join("multirepo.toml"))
         .expect("read manifest before init");
 
     let result = workspace.run(&["init"]);
@@ -50,7 +50,7 @@ fn init_refuses_to_clobber_an_existing_manifest() {
         result.stdout, result.stderr
     );
 
-    let after = std::fs::read_to_string(workspace.root().join("workspace.toml"))
+    let after = std::fs::read_to_string(workspace.root().join("multirepo.toml"))
         .expect("read manifest after failed init");
     assert_eq!(after, before, "expected the existing manifest to be left untouched");
 }
@@ -58,10 +58,10 @@ fn init_refuses_to_clobber_an_existing_manifest() {
 #[test]
 fn init_does_not_reinit_or_destroy_history_in_an_existing_git_repo() {
     let workspace = Workspace::new();
-    std::fs::write(workspace.root().join("workspace.toml"), "").expect("seed empty manifest");
+    std::fs::write(workspace.root().join("multirepo.toml"), "").expect("seed empty manifest");
     workspace.init_as_git_repo();
-    std::fs::remove_file(workspace.root().join("workspace.toml")).expect("remove manifest to test init again");
-    // Note: workspace.toml is now absent but .git and its commit history
+    std::fs::remove_file(workspace.root().join("multirepo.toml")).expect("remove manifest to test init again");
+    // Note: multirepo.toml is now absent but .git and its commit history
     // remain, exercising "already a git repo" without a manifest present.
 
     let before_head = std::process::Command::new("git")
@@ -79,7 +79,7 @@ fn init_does_not_reinit_or_destroy_history_in_an_existing_git_repo() {
         "expected init to succeed against an existing git repo, stdout={} stderr={}",
         result.stdout, result.stderr
     );
-    assert!(workspace.root().join("workspace.toml").exists(), "expected workspace.toml to be written");
+    assert!(workspace.root().join("multirepo.toml").exists(), "expected multirepo.toml to be written");
 
     let after_head = std::process::Command::new("git")
         .args(["-C"])
@@ -105,6 +105,6 @@ fn init_creates_the_target_directory_if_it_does_not_exist_yet() {
         "expected init to succeed for a not-yet-existing target dir, stdout={} stderr={}",
         result.stdout, result.stderr
     );
-    assert!(target.join("workspace.toml").exists(), "expected workspace.toml under the created directory");
+    assert!(target.join("multirepo.toml").exists(), "expected multirepo.toml under the created directory");
     assert!(target.join(".git").exists(), "expected .git under the created directory");
 }

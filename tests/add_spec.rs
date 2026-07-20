@@ -2,10 +2,10 @@ mod support;
 
 use support::Workspace;
 
-/// Write an empty `workspace.toml` so the workspace root can be
+/// Write an empty `multirepo.toml` so the workspace root can be
 /// discovered before the very first repo has been added to it.
 fn empty_manifest(workspace: &Workspace) {
-    std::fs::write(workspace.root().join("workspace.toml"), "").expect("write empty manifest");
+    std::fs::write(workspace.root().join("multirepo.toml"), "").expect("write empty manifest");
 }
 #[test]
 fn add_clones_the_repo_and_appends_a_manifest_entry() {
@@ -22,7 +22,7 @@ fn add_clones_the_repo_and_appends_a_manifest_entry() {
     );
     assert!(workspace.repo("api").exists(), "expected api to be cloned onto disk");
 
-    let manifest = std::fs::read_to_string(workspace.root().join("workspace.toml"))
+    let manifest = std::fs::read_to_string(workspace.root().join("multirepo.toml"))
         .expect("read manifest after add");
     assert!(
         manifest.contains("[repos.api]"),
@@ -48,7 +48,7 @@ fn add_records_an_explicit_branch_when_given() {
         result.stdout, result.stderr
     );
 
-    let manifest = std::fs::read_to_string(workspace.root().join("workspace.toml"))
+    let manifest = std::fs::read_to_string(workspace.root().join("multirepo.toml"))
         .expect("read manifest after add");
     assert!(
         manifest.contains("branch = \"main\""),
@@ -71,7 +71,7 @@ fn add_preserves_existing_manifest_entries() {
         result.stdout, result.stderr
     );
 
-    let manifest = std::fs::read_to_string(workspace.root().join("workspace.toml"))
+    let manifest = std::fs::read_to_string(workspace.root().join("multirepo.toml"))
         .expect("read manifest after add");
     assert!(manifest.contains("[repos.web]"), "expected existing web entry preserved, got: {manifest}");
     assert!(manifest.contains("[repos.api]"), "expected new api entry appended, got: {manifest}");

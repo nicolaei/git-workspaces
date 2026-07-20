@@ -36,8 +36,8 @@ fn list_reports_a_clear_error_when_no_manifest_is_found() {
 
     assert!(!result.success, "expected list to fail with no manifest");
     assert!(
-        result.stdout.contains("workspace.toml"),
-        "expected error to mention workspace.toml, got: {}",
+        result.stdout.contains("multirepo.toml"),
+        "expected error to mention multirepo.toml, got: {}",
         result.stdout
     );
 }

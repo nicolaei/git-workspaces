@@ -22,7 +22,7 @@ impl std::fmt::Display for SelectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SelectError::UnknownRepo(name) => {
-                write!(f, "unknown repo \"{name}\" in workspace.toml")
+                write!(f, "unknown repo \"{name}\" in multirepo.toml")
             }
             SelectError::DuplicateRepo(name) => {
                 write!(f, "repo \"{name}\" named more than once")

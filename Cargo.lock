@@ -176,7 +176,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "git-workspace"
+name = "git-multirepo"
 version = "0.2.0"
 dependencies = [
  "assert_cmd",

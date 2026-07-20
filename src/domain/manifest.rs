@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-/// A parsed `workspace.toml`, keyed by repo name.
+/// A parsed `multirepo.toml`, keyed by repo name.
 ///
 /// Repos are stored in a `BTreeMap` so iteration is always sorted by name —
 /// callers that need deterministic output (e.g. `list`) get it for free.
@@ -30,12 +30,12 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ManifestError::Malformed(msg) => write!(f, "malformed workspace.toml: {msg}"),
+            ManifestError::Malformed(msg) => write!(f, "malformed multirepo.toml: {msg}"),
             ManifestError::MissingRemote(name) => {
                 write!(f, "repo \"{name}\" is missing a required `remote` field")
             }
             ManifestError::DuplicateRepo(name) => {
-                write!(f, "\"{name}\" is already declared in workspace.toml")
+                write!(f, "\"{name}\" is already declared in multirepo.toml")
             }
         }
     }
@@ -101,7 +101,7 @@ pub fn add_repo(
     Ok(Manifest { repos })
 }
 
-/// Serialize a `Manifest` back to `workspace.toml` text. Round-trips
+/// Serialize a `Manifest` back to `multirepo.toml` text. Round-trips
 /// through the parsed `Manifest` rather than editing raw TOML in place —
 /// this manifest is small and entirely machine-managed, so byte-for-byte
 /// formatting/comment preservation isn't a requirement (logged decision,

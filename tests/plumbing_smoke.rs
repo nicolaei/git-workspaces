@@ -1,7 +1,7 @@
 //! The ONE test in the whole suite allowed to spawn the real `git` binary.
 //!
 //! It proves git's own subcommand dispatch finds our binary on PATH when
-//! named `git-workspace` — nothing else should ever re-test that mechanism.
+//! named `git-multirepo` — nothing else should ever re-test that mechanism.
 
 use std::fs;
 use std::path::PathBuf;
@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use assert_cmd::cargo::cargo_bin;
 
 #[test]
-fn git_workspace_version_resolves_via_real_git_path_dispatch() {
-    let built_binary = cargo_bin("git-workspace");
+fn git_multirepo_version_resolves_via_real_git_path_dispatch() {
+    let built_binary = cargo_bin("git-multirepo");
 
     let temp_dir = tempfile::tempdir().expect("create temp dir for fake PATH");
-    let linked_binary = temp_dir.path().join("git-workspace");
+    let linked_binary = temp_dir.path().join("git-multirepo");
     fs::copy(&built_binary, &linked_binary).expect("copy built binary onto temp PATH");
 
     #[cfg(unix)]
@@ -30,7 +30,7 @@ fn git_workspace_version_resolves_via_real_git_path_dispatch() {
     let new_path = std::env::join_paths(path_entries).expect("join PATH entries");
 
     let output = std::process::Command::new("git")
-        .arg("workspace")
+        .arg("multirepo")
         .arg("--version")
         .env("PATH", &new_path)
         .output()
@@ -38,14 +38,14 @@ fn git_workspace_version_resolves_via_real_git_path_dispatch() {
 
     assert!(
         output.status.success(),
-        "git workspace --version failed: stdout={} stderr={}",
+        "git multirepo --version failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("git-workspace"),
-        "expected version output to mention git-workspace, got: {stdout}"
+        stdout.contains("git-multirepo"),
+        "expected version output to mention git-multirepo, got: {stdout}"
     );
 }

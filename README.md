@@ -1,7 +1,7 @@
-# git-workspace
+# git-multirepo
 
-A manifest-driven multi-repo git plugin. `git workspace <cmd>` manages a fleet
-of independent git repos declared in a `workspace.toml` at the root of a
+A manifest-driven multi-repo git plugin. `git multirepo <cmd>` manages a fleet
+of independent git repos declared in a `multirepo.toml` at the root of a
 parent folder — the pattern you want when several sibling repos live under
 one folder and get worked on together.
 
@@ -9,13 +9,13 @@ Install via Homebrew (recommended):
 
 ```sh
 brew tap nicolaei/tools
-brew install git-workspace
+brew install git-multirepo
 ```
 
 ## Local install (development)
 
 `git` finds subcommands by looking for an executable named `git-<cmd>`
-anywhere on `$PATH`. To make `git workspace` resolve to this crate during
+anywhere on `$PATH`. To make `git multirepo` resolve to this crate during
 local development:
 
 1. Build a release binary:
@@ -24,11 +24,11 @@ local development:
    cargo build --release
    ```
 
-2. Put the binary on `$PATH` as `git-workspace`. Either symlink it into a
+2. Put the binary on `$PATH` as `git-multirepo`. Either symlink it into a
    directory already on your `$PATH` (e.g. `~/.local/bin`, `/usr/local/bin`):
 
    ```sh
-   ln -sf "$(pwd)/target/release/git-workspace" ~/.local/bin/git-workspace
+   ln -sf "$(pwd)/target/release/git-multirepo" ~/.local/bin/git-multirepo
    ```
 
    or add `target/release/` itself to `$PATH`:
@@ -40,7 +40,7 @@ local development:
 3. Verify it resolves:
 
    ```sh
-   git workspace --version
+   git multirepo --version
    ```
 
    This should print the crate's version — proof that git's own subcommand
@@ -49,8 +49,9 @@ local development:
 ## Releasing
 
 Releases are built and published entirely by CI ([`dist`][dist], configured in
-`dist-workspace.toml`). Cutting a release means bumping the version and pushing
-a matching tag — everything else is automatic.
+`dist-workspace.toml` — that's `dist`'s own config filename convention, unrelated
+to this project's own manifest). Cutting a release means bumping the version
+and pushing a matching tag — everything else is automatic.
 
 [dist]: https://github.com/axodotdev/cargo-dist
 
@@ -80,26 +81,34 @@ a matching tag — everything else is automatic.
 4. Watch it run:
 
    ```sh
-   gh run list --repo nicolaei/git-workspace --limit 1
+   gh run list --repo nicolaei/git-multirepo --limit 1
    ```
 
    The workflow (`.github/workflows/release.yml`) builds macOS binaries for
    both `aarch64-apple-darwin` and `x86_64-apple-darwin`, creates the GitHub
    Release with the built artifacts and a shell installer, then pushes an
    updated formula to the [`nicolaei/homebrew-tools`][tap] tap so
-   `brew install git-workspace` picks up the new version.
+   `brew install git-multirepo` picks up the new version.
 
    [tap]: https://github.com/nicolaei/homebrew-tools
 
 5. Verify the install path actually works end to end:
 
    ```sh
-   brew update && brew upgrade git-workspace
-   git workspace --version   # should print the new version
+   brew update && brew upgrade git-multirepo
+   git multirepo --version   # should print the new version
    ```
 
 ### Caveats
 
+- **Check any new command name against Homebrew core and existing tools before
+  committing to it.** This project was originally named `git-workspace`
+  (singular) until testing the actual `brew install` revealed it collides with
+  an unrelated, already-published formula of the same name in Homebrew's
+  official core repo (github.com/orf/git-workspace) — same binary name, same
+  manifest filename convention, same invocation style. `brew install
+  git-workspace` silently installed the wrong tool. Renamed to `git-multirepo`
+  after confirming it's free on Homebrew core.
 - **Homebrew only ever keeps the latest version.** There's no way to install
   an older release through the tap once a newer one exists. Don't tag and
   push an old version after a newer one has already gone out — it will
