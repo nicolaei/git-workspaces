@@ -1,6 +1,6 @@
 [package]
 name = "git-multirepo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Manifest-driven multi-repo git plugin"
 license = "MPL-2.0"
