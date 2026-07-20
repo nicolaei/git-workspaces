@@ -79,6 +79,17 @@ enum Command {
         #[command(subcommand)]
         action: WorktreeAction,
     },
+    /// Bootstrap a brand-new workspace: write a genuinely empty
+    /// `workspace.toml` and `git init` if `path` isn't already a git repo.
+    /// `path` defaults to cwd (same convention as `git init <dir>`) and is
+    /// created if it doesn't exist. Refuses to clobber an existing
+    /// manifest. Doesn't walk up parent directories looking for an
+    /// ancestor workspace — mirrors how `git init` itself doesn't stop you
+    /// from nesting repos.
+    Init {
+        /// Where to create the workspace. Defaults to the current directory.
+        path: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -118,6 +129,7 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
             Some(Command::Add { path, remote, branch }) => run_add(cwd, &path, &remote, branch.as_deref(), out),
             Some(Command::Checkout { branch, create, repos }) => run_checkout(cwd, &branch, create, &repos, out),
             Some(Command::Worktree { action }) => run_worktree(cwd, action, out),
+            Some(Command::Init { path }) => run_init(cwd, path.as_deref(), out),
         },
         Err(e) => {
             // clap's Error already renders --help/--version/usage-error text
@@ -217,6 +229,47 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Bootstrap a brand-new workspace at `path` (cwd if omitted), creating the
+/// directory if needed. Refuses to clobber an existing `workspace.toml` at
+/// that exact path — no upward discovery here, unlike every other command;
+/// this one is about creating a workspace, not finding one. `git init`s the
+/// target only if it isn't already a git repo, so an existing repo's
+/// history is left untouched.
+fn run_init(cwd: &Path, path: Option<&str>, out: &mut impl Write) -> ExitCode {
+    let target = match path {
+        Some(p) => cwd.join(p),
+        None => cwd.to_path_buf(),
+    };
+
+    if let Err(e) = shell::fs::create_dir_all(&target) {
+        writeln!(out, "error: failed to create {}: {e}", target.display()).ok();
+        return ExitCode::FAILURE;
+    }
+
+    let manifest_path = target.join("workspace.toml");
+    if shell::fs::exists(&manifest_path) {
+        writeln!(out, "error: workspace.toml already exists at {}", target.display()).ok();
+        return ExitCode::FAILURE;
+    }
+
+    if !shell::fs::exists(&target.join(".git")) {
+        if let Err(e) = shell::git::init(&target) {
+            writeln!(out, "error: {e}").ok();
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let empty = domain::manifest::Manifest { repos: std::collections::BTreeMap::new() };
+    let serialized = domain::manifest::serialize_manifest(&empty);
+    if let Err(e) = shell::fs::write_string(&manifest_path, &serialized) {
+        writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
+        return ExitCode::FAILURE;
+    }
+
+    writeln!(out, "initialized workspace at {}", target.display()).ok();
+    ExitCode::SUCCESS
 }
 
 /// Clone `remote` to `<workspace root>/<path>` and register it in

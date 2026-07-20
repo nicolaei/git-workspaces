@@ -18,6 +18,11 @@ impl std::fmt::Display for GitError {
 
 impl std::error::Error for GitError {}
 
+/// `git init <path>`.
+pub fn init(path: &Path) -> Result<(), GitError> {
+    run(Command::new("git").arg("init").arg(path))
+}
+
 /// `git clone <remote> <path>`.
 pub fn clone(remote: &str, path: &Path) -> Result<(), GitError> {
     run(Command::new("git").args(["clone", remote]).arg(path))
