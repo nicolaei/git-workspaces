@@ -25,6 +25,13 @@ enum Command {
         /// Repo names to narrow to. Omit to sync the whole workspace.
         repos: Vec<String>,
     },
+    /// Report live per-repo state: branch, dirty/clean, ahead/behind
+    /// upstream, and whether the checked-out branch matches the manifest.
+    /// Whole workspace by default; pass repo names to narrow.
+    Status {
+        /// Repo names to narrow to. Omit to report on the whole workspace.
+        repos: Vec<String>,
+    },
 }
 
 /// The one true entrypoint. `main.rs` is a thin wrapper around this.
@@ -37,6 +44,7 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
             None => ExitCode::SUCCESS,
             Some(Command::List) => run_list(cwd, out),
             Some(Command::Sync { repos }) => run_sync(cwd, &repos, out),
+            Some(Command::Status { repos }) => run_status(cwd, &repos, out),
         },
         Err(e) => {
             // clap's Error already renders --help/--version/usage-error text
@@ -136,6 +144,104 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
+    let (root, manifest) = match load_manifest(cwd, out) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    let targets = match domain::select::resolve_targets(&manifest, repos) {
+        Ok(targets) => targets,
+        Err(e) => {
+            writeln!(out, "error: {e}").ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut raw_states = std::collections::BTreeMap::new();
+    for name in &targets {
+        let path = root.join(name);
+        match shell::git::gather_status(&path) {
+            Ok(state) => {
+                raw_states.insert(name.clone(), state);
+            }
+            Err(e) => {
+                writeln!(out, "{name}: error: {e}").ok();
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let statuses = domain::status::compute_status(&manifest, &raw_states);
+    for line in format_status_table(&statuses) {
+        writeln!(out, "{line}").ok();
+    }
+
+    ExitCode::SUCCESS
+}
+
+/// Render the `status` output table: REPO/BRANCH/STATE/SYNC, plus a NOTE
+/// column only when at least one row has one. Columns are aligned: each
+/// column's width is max(header length, longest cell in that column) + 2
+/// trailing spaces, except the last column which is left unpadded.
+fn format_status_table(rows: &[domain::status::RepoStatus]) -> Vec<String> {
+    let has_note = rows.iter().any(|r| r.note.is_some());
+
+    let mut header = vec!["REPO".to_string(), "BRANCH".to_string(), "STATE".to_string(), "SYNC".to_string()];
+    if has_note {
+        header.push("NOTE".to_string());
+    }
+
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            let state = if r.dirty_count == 0 {
+                "clean".to_string()
+            } else {
+                format!("dirty ({})", r.dirty_count)
+            };
+            let sync = match (r.ahead, r.behind) {
+                (0, 0) => "up to date".to_string(),
+                (a, 0) => format!("ahead {a}"),
+                (0, b) => format!("behind {b}"),
+                (a, b) => format!("ahead {a}, behind {b}"),
+            };
+            let mut cells = vec![r.name.clone(), r.branch.clone(), state, sync];
+            if has_note {
+                cells.push(r.note.clone().unwrap_or_default());
+            }
+            cells
+        })
+        .collect();
+
+    let col_count = header.len();
+    let mut widths = vec![0usize; col_count];
+    for (i, cell) in header.iter().enumerate() {
+        widths[i] = cell.len();
+    }
+    for row in &body {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+
+    let render_row = |cells: &[String]| -> String {
+        let mut line = String::new();
+        for (i, cell) in cells.iter().enumerate() {
+            if i + 1 == col_count {
+                line.push_str(cell);
+            } else {
+                line.push_str(&format!("{:<width$}", cell, width = widths[i] + 2));
+            }
+        }
+        line
+    };
+
+    let mut lines = vec![render_row(&header)];
+    lines.extend(body.iter().map(|row| render_row(row)));
+    lines
 }
 
 /// Discover the workspace root from `cwd` and load+parse its manifest,

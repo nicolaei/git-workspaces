@@ -1,6 +1,6 @@
 //! Thin wrappers spawning the real system `git` binary. No branching or
-//! business logic here — `domain::plan` decides what to do, this executes
-//! it and surfaces git's own error output.
+//! business logic here — `domain::plan`/`domain::status` decide what to
+//! do, this executes it and surfaces git's own output.
 
 use std::path::Path;
 use std::process::Command;
@@ -33,6 +33,108 @@ pub fn pull(path: &Path) -> Result<(), GitError> {
         .arg("-C")
         .arg(path)
         .args(["pull", "--ff-only"]))
+}
+
+/// Gather the raw per-repo state `domain::status::compute_status` needs:
+/// current branch, dirty file count, and ahead/behind vs upstream.
+///
+/// Fetches quietly first so ahead/behind reflects the real remote, not a
+/// stale remote-tracking ref from the last sync (logged decision, story D).
+/// A repo with no upstream configured reports ahead/behind as 0/0 rather
+/// than erroring — there's nothing to compare against.
+pub fn gather_status(path: &Path) -> Result<crate::domain::status::RawRepoState, GitError> {
+    fetch_quietly(path);
+
+    let branch = current_branch(path)?;
+    let dirty_count = porcelain_status(path)?.len();
+    let (ahead, behind) = ahead_behind(path);
+
+    Ok(crate::domain::status::RawRepoState {
+        branch,
+        dirty_count,
+        ahead,
+        behind,
+    })
+}
+
+/// `git -C <path> fetch --quiet`. Best-effort: a repo whose remote is
+/// unreachable still gets a status report, just with stale ahead/behind.
+fn fetch_quietly(path: &Path) {
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["fetch", "--quiet"])
+        .output()
+        .ok();
+}
+
+/// `git -C <path> rev-parse --abbrev-ref HEAD`.
+fn current_branch(path: &Path) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .map_err(|e| GitError {
+            message: format!("failed to run git: {e}"),
+        })?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(GitError {
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+/// `git -C <path> status --porcelain`, split into non-empty lines — one
+/// line per changed file.
+fn porcelain_status(path: &Path) -> Result<Vec<String>, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["status", "--porcelain"])
+        .output()
+        .map_err(|e| GitError {
+            message: format!("failed to run git: {e}"),
+        })?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.to_string())
+            .collect())
+    } else {
+        Err(GitError {
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+/// `git -C <path> rev-list --left-right --count @{u}...HEAD`, parsed into
+/// (ahead, behind). No upstream configured — or any other failure — reports
+/// (0, 0) rather than erroring; there's nothing meaningful to compare.
+fn ahead_behind(path: &Path) -> (u32, u32) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-list", "--left-right", "--count", "@{u}...HEAD"])
+        .output();
+
+    let Ok(output) = output else {
+        return (0, 0);
+    };
+    if !output.status.success() {
+        return (0, 0);
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.split_whitespace();
+    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (ahead, behind)
 }
 
 fn run(command: &mut Command) -> Result<(), GitError> {

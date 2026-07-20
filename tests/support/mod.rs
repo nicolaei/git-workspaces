@@ -13,7 +13,7 @@ use assert_cmd::Command;
 
 pub struct Workspace {
     dir: tempfile::TempDir,
-    repos: RefCell<Vec<(String, String)>>,
+    repos: RefCell<Vec<(String, String, Option<String>)>>,
     /// Fixture "remotes" live in a sibling tempdir, not under the
     /// workspace root — they stand in for repos hosted elsewhere, and
     /// living outside the workspace keeps `git status` at the workspace
@@ -47,15 +47,29 @@ impl Workspace {
     pub fn declares_repo(&self, name: &str, remote: &str) -> &Self {
         self.repos
             .borrow_mut()
-            .push((name.to_string(), remote.to_string()));
+            .push((name.to_string(), remote.to_string(), None));
+        self.write_manifest();
+        self
+    }
+
+    /// Declare a repo with an explicit manifest `branch =` field — used to
+    /// exercise the status command's branch-mismatch note.
+    pub fn declares_repo_with_branch(&self, name: &str, remote: &str, branch: &str) -> &Self {
+        self.repos
+            .borrow_mut()
+            .push((name.to_string(), remote.to_string(), Some(branch.to_string())));
         self.write_manifest();
         self
     }
 
     fn write_manifest(&self) {
         let mut content = String::new();
-        for (name, remote) in self.repos.borrow().iter() {
-            content.push_str(&format!("[repos.{name}]\nremote = \"{remote}\"\n\n"));
+        for (name, remote, branch) in self.repos.borrow().iter() {
+            content.push_str(&format!("[repos.{name}]\nremote = \"{remote}\"\n"));
+            if let Some(branch) = branch {
+                content.push_str(&format!("branch = \"{branch}\"\n"));
+            }
+            content.push('\n');
         }
         std::fs::write(self.root().join("workspaces.toml"), content).expect("write manifest");
     }
@@ -232,6 +246,37 @@ impl RepoHandle {
             .expect("run git rev-parse HEAD");
         assert!(output.status.success(), "git rev-parse HEAD failed: {}", String::from_utf8_lossy(&output.stderr));
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// Write an untracked file into the repo, making `git status --porcelain`
+    /// report it dirty — used to exercise the status command's dirty count.
+    pub fn make_dirty(&self) -> &Self {
+        std::fs::write(self.path.join("scratch.txt"), "uncommitted").expect("write scratch file");
+        self
+    }
+
+    /// Commit a new file locally without pushing — puts the repo ahead of
+    /// its upstream by one commit.
+    pub fn commit_new_file(&self, message: &str) -> &Self {
+        let file_name = format!("{}.txt", message.replace(' ', "_"));
+        std::fs::write(self.path.join(&file_name), message).expect("write file for commit");
+        run_git(&self.path, &["add", "."]).expect("stage file");
+        run_git(
+            &self.path,
+            &[
+                "-c", "user.email=fixture@example.com", "-c", "user.name=fixture",
+                "commit", "-m", message,
+            ],
+        )
+        .expect("commit file");
+        self
+    }
+
+    /// Check out a new branch, diverging from the manifest's declared
+    /// branch — used to exercise the status command's branch-mismatch note.
+    pub fn checkout_new_branch(&self, name: &str) -> &Self {
+        run_git(&self.path, &["checkout", "-b", name]).expect("checkout new branch");
+        self
     }
 }
 

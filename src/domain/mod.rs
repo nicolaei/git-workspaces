@@ -3,3 +3,5 @@
 pub mod discover;
 pub mod manifest;
 pub mod plan;
+pub mod select;
+pub mod status;
