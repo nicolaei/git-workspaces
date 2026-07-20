@@ -72,6 +72,35 @@ enum Command {
         /// Repo names to narrow to. Omit to act on the whole workspace.
         repos: Vec<String>,
     },
+    /// Manage full-fleet worktrees — one named, independent copy of every
+    /// repo in the manifest at once. Whole workspace only; there's no
+    /// per-repo narrowing here (logged decision, story H).
+    Worktree {
+        #[command(subcommand)]
+        action: WorktreeAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WorktreeAction {
+    /// Add a new named worktree covering every repo in the manifest.
+    /// Branch defaults to `<name>`; `--branch` decouples the two.
+    Add {
+        /// The worktree's name, also the default branch name.
+        name: String,
+        /// Use this branch name instead of `<name>`.
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// List named worktrees under `.worktrees/`, flagging any that don't
+    /// cover every manifest repo.
+    List,
+    /// Remove a named worktree: `git worktree remove` per repo, then
+    /// delete the now-empty `.worktrees/<name>/` directory.
+    Remove {
+        /// The worktree's name.
+        name: String,
+    },
 }
 
 /// The one true entrypoint. `main.rs` is a thin wrapper around this.
@@ -88,6 +117,7 @@ pub fn run(args: impl Iterator<Item = String>, cwd: &Path, out: &mut impl Write)
             Some(Command::Exec { repos, parallel, command }) => run_exec(cwd, &repos, &command, parallel, out),
             Some(Command::Add { path, remote, branch }) => run_add(cwd, &path, &remote, branch.as_deref(), out),
             Some(Command::Checkout { branch, create, repos }) => run_checkout(cwd, &branch, create, &repos, out),
+            Some(Command::Worktree { action }) => run_worktree(cwd, action, out),
         },
         Err(e) => {
             // clap's Error already renders --help/--version/usage-error text
@@ -176,7 +206,7 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
 
     if !cloned_paths.is_empty() {
         let all_repo_paths: Vec<String> = manifest.repos.keys().cloned().collect();
-        if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths) {
+        if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths, &[]) {
             writeln!(out, "error: failed to update .gitignore: {e}").ok();
             failed = true;
         }
@@ -274,6 +304,157 @@ fn run_checkout(cwd: &Path, branch: &str, create: bool, repos: &[String], out: &
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn run_worktree(cwd: &Path, action: WorktreeAction, out: &mut impl Write) -> ExitCode {
+    match action {
+        WorktreeAction::Add { name, branch } => run_worktree_add(cwd, &name, branch.as_deref(), out),
+        WorktreeAction::List => run_worktree_list(cwd, out),
+        WorktreeAction::Remove { name } => run_worktree_remove(cwd, &name, out),
+    }
+}
+
+/// Add a full-fleet worktree named `name`. Every repo in the manifest must
+/// already be cloned in its primary location — verified up front, with no
+/// side effects, so a missing repo fails fast with a clear "run sync
+/// first" message instead of leaving a half-built `.worktrees/<name>/`
+/// behind (logged decision, story H).
+///
+/// A failure partway through the fleet stops immediately rather than
+/// collecting-and-continuing like `sync`/`checkout`/`exec`: a worktree is
+/// one atomic named copy of the whole fleet, and an already-created
+/// worktree from a failed run would sit there half-finished with no
+/// manifest copy — worse than failing loudly on the first repo that can't
+/// be added (logged decision, story H).
+fn run_worktree_add(cwd: &Path, name: &str, branch: Option<&str>, out: &mut impl Write) -> ExitCode {
+    let (root, manifest) = match load_manifest(cwd, out) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    if let Some(missing) = manifest.repos.keys().find(|repo| !root.join(repo).exists()) {
+        writeln!(out, "error: \"{missing}\" is not cloned yet — run `git workspaces sync` first").ok();
+        return ExitCode::FAILURE;
+    }
+
+    let branch = branch.unwrap_or(name);
+    let layout = domain::worktree::worktree_layout(&manifest, name);
+
+    for (repo, rel_path) in &layout {
+        let repo_path = root.join(repo);
+        let target_path = root.join(rel_path);
+        if let Some(parent) = target_path.parent() {
+            if let Err(e) = shell::fs::create_dir_all(parent) {
+                writeln!(out, "error: failed to create {}: {e}", parent.display()).ok();
+                return ExitCode::FAILURE;
+            }
+        }
+        if let Err(e) = shell::git::worktree_add(&repo_path, &target_path, branch) {
+            writeln!(out, "{repo}: error: {e}").ok();
+            return ExitCode::FAILURE;
+        }
+        writeln!(out, "{repo}: worktree added at {}", target_path.display()).ok();
+    }
+
+    let worktree_root = root.join(".worktrees").join(name);
+    let manifest_path = worktree_root.join("workspaces.toml");
+    let serialized = domain::manifest::serialize_manifest(&manifest);
+    if let Err(e) = shell::fs::write_string(&manifest_path, &serialized) {
+        writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
+        return ExitCode::FAILURE;
+    }
+
+    let all_repo_paths: Vec<String> = manifest.repos.keys().cloned().collect();
+    if let Err(e) = shell::fs::ensure_gitignored(&root, &all_repo_paths, &[".worktrees"]) {
+        writeln!(out, "error: failed to update .gitignore: {e}").ok();
+        return ExitCode::FAILURE;
+    }
+
+    writeln!(out, "{name}: worktree added ({branch})").ok();
+    ExitCode::SUCCESS
+}
+
+/// List named worktrees under `.worktrees/`. A worktree missing a
+/// subdirectory for one or more manifest repos is reported as broken
+/// rather than hidden — a partial worktree (e.g. from an interrupted
+/// `add`) still needs to be visible so it can be cleaned up (logged
+/// decision, story H).
+fn run_worktree_list(cwd: &Path, out: &mut impl Write) -> ExitCode {
+    let (root, manifest) = match load_manifest(cwd, out) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    let worktrees_dir = root.join(".worktrees");
+    let names = match shell::fs::list_subdirectory_names(&worktrees_dir) {
+        Ok(names) => names,
+        Err(e) => {
+            writeln!(out, "error: failed to read {}: {e}", worktrees_dir.display()).ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
+    for name in &names {
+        let layout = domain::worktree::worktree_layout(&manifest, name);
+        let missing: Vec<&str> = layout
+            .iter()
+            .filter(|(_, rel_path)| !root.join(rel_path).is_dir())
+            .map(|(repo, _)| repo.as_str())
+            .collect();
+
+        let worktree_root = worktrees_dir.join(name);
+        if missing.is_empty() {
+            let branch = layout
+                .first()
+                .and_then(|(_, rel_path)| shell::git::current_branch(&root.join(rel_path)).ok())
+                .unwrap_or_else(|| "?".to_string());
+            writeln!(out, "{name}: {branch} ({})", worktree_root.display()).ok();
+        } else {
+            writeln!(out, "{name}: broken, missing {} ({})", missing.join(", "), worktree_root.display()).ok();
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+/// Remove a named worktree: `git worktree remove` per repo from its
+/// primary clone, then delete the now-empty `.worktrees/<name>/`
+/// directory (including the manifest copy). A failure removing one repo's
+/// worktree stops immediately and leaves the directory in place — this is
+/// cleanup of one atomic unit, not a fan-out command where partial
+/// completion across independent repos is acceptable (logged decision,
+/// story H).
+fn run_worktree_remove(cwd: &Path, name: &str, out: &mut impl Write) -> ExitCode {
+    let (root, manifest) = match load_manifest(cwd, out) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    let layout = domain::worktree::worktree_layout(&manifest, name);
+
+    for (repo, rel_path) in &layout {
+        let repo_path = root.join(repo);
+        let target_path = root.join(rel_path);
+        if !target_path.exists() {
+            continue;
+        }
+        if let Err(e) = shell::git::worktree_remove(&repo_path, &target_path) {
+            writeln!(out, "{repo}: error: {e}").ok();
+            return ExitCode::FAILURE;
+        }
+        writeln!(out, "{repo}: worktree removed").ok();
+    }
+
+    let worktree_root = root.join(".worktrees").join(name);
+    if worktree_root.exists() {
+        if let Err(e) = shell::fs::remove_dir_all(&worktree_root) {
+            writeln!(out, "error: failed to remove {}: {e}", worktree_root.display()).ok();
+            return ExitCode::FAILURE;
+        }
+    }
+
+    writeln!(out, "{name}: worktree removed").ok();
+    ExitCode::SUCCESS
 }
 
 fn run_status(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {

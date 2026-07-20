@@ -55,6 +55,48 @@ pub fn create_branch(path: &Path, branch: &str) -> Result<(), GitError> {
         .args(["checkout", "-b", branch]))
 }
 
+/// Whether `branch` exists as a local branch in the repo at `path`.
+pub fn branch_exists(path: &Path, branch: &str) -> Result<bool, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .map_err(|e| GitError {
+            message: format!("failed to run git: {e}"),
+        })?;
+    Ok(output.status.success())
+}
+
+/// `git -C <repo_path> worktree add <target_path> [<branch> | -b <branch>]`.
+///
+/// Checks out `branch` into the new worktree if it already exists in
+/// `repo_path`, creates it fresh otherwise — same create-or-checkout
+/// pattern as `checkout`/`create_branch` above, so a fleet-wide `worktree
+/// add` behaves consistently whether a repo already has the branch or
+/// not (logged decision, story H).
+pub fn worktree_add(repo_path: &Path, target_path: &Path, branch: &str) -> Result<(), GitError> {
+    let exists = branch_exists(repo_path, branch)?;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo_path).args(["worktree", "add"]);
+    if exists {
+        cmd.arg(target_path).arg(branch);
+    } else {
+        cmd.args(["-b", branch]).arg(target_path);
+    }
+    run(&mut cmd)
+}
+
+/// `git -C <repo_path> worktree remove <target_path>`.
+pub fn worktree_remove(repo_path: &Path, target_path: &Path) -> Result<(), GitError> {
+    run(Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["worktree", "remove"])
+        .arg(target_path))
+}
+
 /// Gather the raw per-repo state `domain::status::compute_status` needs:
 /// current branch, dirty file count, and ahead/behind vs upstream.
 ///
@@ -89,7 +131,7 @@ fn fetch_quietly(path: &Path) {
 }
 
 /// `git -C <path> rev-parse --abbrev-ref HEAD`.
-fn current_branch(path: &Path) -> Result<String, GitError> {
+pub fn current_branch(path: &Path) -> Result<String, GitError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(path)
