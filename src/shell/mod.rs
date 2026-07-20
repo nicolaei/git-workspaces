@@ -3,3 +3,4 @@
 //! business-relevant itself.
 
 pub mod fs;
+pub mod git;

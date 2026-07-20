@@ -1,0 +1,105 @@
+mod support;
+
+use support::Workspace;
+
+#[test]
+fn sync_clones_a_repo_declared_in_the_manifest_but_missing_on_disk() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+
+    let result = workspace.run(&["sync"]);
+
+    assert!(
+        result.success,
+        "expected sync to succeed, stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+    assert!(
+        workspace.repo("api").exists(),
+        "expected api to be cloned onto disk"
+    );
+}
+
+#[test]
+fn sync_pulls_an_existing_repo_forward_when_the_remote_has_a_new_commit() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+
+    let first = workspace.run(&["sync"]);
+    assert!(first.success, "expected first sync to succeed");
+    let commit_before = workspace.repo("api").head_commit();
+
+    workspace.push_new_commit_to_fixture_remote(&remote);
+
+    let second = workspace.run(&["sync"]);
+    assert!(
+        second.success,
+        "expected second sync to succeed, stdout={} stderr={}",
+        second.stdout, second.stderr
+    );
+
+    let commit_after = workspace.repo("api").head_commit();
+    assert_ne!(
+        commit_before, commit_after,
+        "expected sync to pull the new commit forward"
+    );
+}
+
+#[test]
+fn sync_narrows_to_explicitly_named_repos() {
+    let workspace = Workspace::new();
+    let api_remote = workspace.fixture_remote_with_commit("api");
+    let web_remote = workspace.fixture_remote_with_commit("web");
+    workspace.declares_repo("api", api_remote.to_str().unwrap());
+    workspace.declares_repo("web", web_remote.to_str().unwrap());
+
+    let result = workspace.run(&["sync", "api"]);
+
+    assert!(
+        result.success,
+        "expected sync to succeed, stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+    assert!(workspace.repo("api").exists(), "expected api to be cloned");
+    assert!(
+        !workspace.repo("web").exists(),
+        "expected web to be left untouched by narrowed sync"
+    );
+}
+
+#[test]
+fn sync_keeps_the_workspace_roots_own_git_status_clean_via_the_managed_gitignore() {
+    let workspace = Workspace::new();
+    let remote = workspace.fixture_remote_with_commit("api");
+    workspace.declares_repo("api", remote.to_str().unwrap());
+    workspace.init_as_git_repo();
+
+    let first = workspace.run(&["sync"]);
+    assert!(
+        first.success,
+        "expected first sync to succeed, stdout={} stderr={}",
+        first.stdout, first.stderr
+    );
+
+    // First sync writes a fresh .gitignore — legitimately untracked until
+    // the user commits it themselves, same as any newly created file.
+    workspace.commit_all("commit managed gitignore");
+
+    // A second sync (no new clones, just a pull) must not reintroduce any
+    // untracked or modified state: the managed block is already correct.
+    workspace.push_new_commit_to_fixture_remote(&remote);
+    let second = workspace.run(&["sync"]);
+    assert!(
+        second.success,
+        "expected second sync to succeed, stdout={} stderr={}",
+        second.stdout, second.stderr
+    );
+
+    let status = workspace.git_status_porcelain();
+    assert!(
+        status.trim().is_empty(),
+        "expected clean git status after sync, got: {status}"
+    );
+}

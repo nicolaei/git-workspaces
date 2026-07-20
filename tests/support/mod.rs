@@ -14,6 +14,11 @@ use assert_cmd::Command;
 pub struct Workspace {
     dir: tempfile::TempDir,
     repos: RefCell<Vec<(String, String)>>,
+    /// Fixture "remotes" live in a sibling tempdir, not under the
+    /// workspace root — they stand in for repos hosted elsewhere, and
+    /// living outside the workspace keeps `git status` at the workspace
+    /// root free of harness-only noise.
+    fixture_remotes_dir: tempfile::TempDir,
 }
 
 impl Workspace {
@@ -21,6 +26,7 @@ impl Workspace {
         Workspace {
             dir: tempfile::tempdir().expect("create workspace tempdir"),
             repos: RefCell::new(Vec::new()),
+            fixture_remotes_dir: tempfile::tempdir().expect("create fixture remotes tempdir"),
         }
     }
 
@@ -74,6 +80,158 @@ impl Workspace {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }
+    }
+
+    /// Create a real local bare git repo with one commit, standing in for
+    /// "the remote" — no mocks, real git. Returns the file path suitable
+    /// for use as a `remote =` value in the manifest.
+    pub fn fixture_remote_with_commit(&self, name: &str) -> PathBuf {
+        let remotes_dir = self.fixture_remotes_dir.path().to_path_buf();
+        let bare_path = remotes_dir.join(format!("{name}.git"));
+
+        let bare_name = format!("{name}.git");
+        run_git(&remotes_dir, &["init", "--bare", "--initial-branch=main", bare_name.as_str()]).expect("init bare fixture remote");
+
+        let checkout_dir = remotes_dir.join(format!("{name}-seed"));
+        run_git(
+            &remotes_dir,
+            &["clone", bare_path.to_str().unwrap(), checkout_dir.to_str().unwrap()],
+        )
+        .expect("clone fixture remote for seeding");
+        self.commit_fixture_change(&checkout_dir, "seed commit");
+        run_git(&checkout_dir, &["push", "origin", "main"]).expect("push seed commit");
+
+        bare_path
+    }
+
+    /// Add a new commit to an existing fixture remote by cloning it into a
+    /// scratch checkout, writing a file, committing, and pushing back.
+    pub fn push_new_commit_to_fixture_remote(&self, bare_path: &Path) {
+        let scratch = tempfile::tempdir().expect("create scratch checkout dir");
+        run_git(
+            scratch.path(),
+            &["clone", bare_path.to_str().unwrap(), "."],
+        )
+        .expect("clone fixture remote for a new commit");
+        self.commit_fixture_change(scratch.path(), "a later commit");
+        run_git(scratch.path(), &["push", "origin", "main"]).expect("push new commit");
+    }
+
+    fn commit_fixture_change(&self, checkout_dir: &Path, message: &str) {
+        std::fs::write(checkout_dir.join("file.txt"), message).expect("write fixture file");
+        run_git(checkout_dir, &["add", "."]).expect("stage fixture file");
+        run_git(
+            checkout_dir,
+            &["-c", "user.email=fixture@example.com", "-c", "user.name=fixture", "commit", "-m", message],
+        )
+        .expect("commit fixture file");
+    }
+
+    /// A handle onto `<workspace root>/<name>` for asserting real git state
+    /// after a `sync`.
+    pub fn repo(&self, name: &str) -> RepoHandle {
+        RepoHandle {
+            path: self.root().join(name),
+        }
+    }
+
+    /// Turn the workspace root itself into a real git repo (so cloned
+    /// child repos need a managed .gitignore to keep its status clean).
+    pub fn init_as_git_repo(&self) -> &Self {
+        run_git(self.root(), &["init", "--initial-branch=main"]).expect("init workspace root as git repo");
+        run_git(self.root(), &["add", "workspaces.toml"]).expect("stage manifest");
+        run_git(
+            self.root(),
+            &[
+                "-c", "user.email=fixture@example.com", "-c", "user.name=fixture",
+                "commit", "-m", "initial commit",
+            ],
+        )
+        .expect("commit manifest");
+        self
+    }
+
+    /// Stage and commit everything currently in the workspace root's own
+    /// git repo (e.g. a freshly written managed .gitignore).
+    pub fn commit_all(&self, message: &str) -> &Self {
+        run_git(self.root(), &["add", "-A"]).expect("stage all changes");
+        run_git(
+            self.root(),
+            &[
+                "-c", "user.email=fixture@example.com", "-c", "user.name=fixture",
+                "commit", "-m", message,
+            ],
+        )
+        .expect("commit changes");
+        self
+    }
+
+    /// `git status --porcelain` from the workspace root, for asserting the
+    /// managed gitignore keeps the root repo clean after a sync.
+    pub fn git_status_porcelain(&self) -> String {
+        let output = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(self.root())
+            .args(["status", "--porcelain"])
+            .output()
+            .expect("run git status");
+        assert!(
+            output.status.success(),
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+}
+
+/// Run a real `git` subprocess in `dir` — used only by the fixture-remote
+/// builder above, not by the CLI under test.
+fn run_git(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("failed to run git {args:?}: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+pub struct RepoHandle {
+    path: PathBuf,
+}
+
+impl RepoHandle {
+    pub fn exists(&self) -> bool {
+        self.path.exists()
+    }
+
+    pub fn current_branch(&self) -> String {
+        let output = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&self.path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .expect("run git rev-parse");
+        assert!(output.status.success(), "git rev-parse failed: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    pub fn head_commit(&self) -> String {
+        let output = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&self.path)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("run git rev-parse HEAD");
+        assert!(output.status.success(), "git rev-parse HEAD failed: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 }
 
