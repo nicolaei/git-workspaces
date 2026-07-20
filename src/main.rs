@@ -5,5 +5,5 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args = env::args();
     let cwd = env::current_dir().expect("cwd must be readable");
-    git_workspaces::run(args, &cwd, &mut io::stdout())
+    git_workspace::run(args, &cwd, &mut io::stdout())
 }

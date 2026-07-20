@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-/// Walk upward from `start` looking for a `workspaces.toml`, exactly like
+/// Walk upward from `start` looking for a `workspace.toml`, exactly like
 /// git walks upward looking for `.git` — passing straight through any
 /// nested child repo's own `.git` boundary on the way up.
 ///
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 pub fn find_workspace_root(start: &Path, exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let mut current = start;
     loop {
-        let candidate = current.join("workspaces.toml");
+        let candidate = current.join("workspace.toml");
         if exists(&candidate) {
             return Some(current.to_path_buf());
         }
@@ -31,14 +31,14 @@ mod tests {
 
     #[test]
     fn finds_manifest_in_the_starting_directory() {
-        let manifest_paths = exists_set(&["/workspace/workspaces.toml"]);
+        let manifest_paths = exists_set(&["/workspace/workspace.toml"]);
         let found = find_workspace_root(Path::new("/workspace"), |p| manifest_paths.contains(p));
         assert_eq!(found, Some(PathBuf::from("/workspace")));
     }
 
     #[test]
     fn finds_manifest_several_levels_up() {
-        let manifest_paths = exists_set(&["/workspace/workspaces.toml"]);
+        let manifest_paths = exists_set(&["/workspace/workspace.toml"]);
         let found = find_workspace_root(Path::new("/workspace/api/src/domain"), |p| {
             manifest_paths.contains(p)
         });
@@ -57,7 +57,7 @@ mod tests {
         // manifest lives at the workspace root above it. Discovery must not
         // stop at the child repo's `.git` boundary — we don't even look for
         // `.git`, so this falls out for free, but assert it explicitly.
-        let manifest_paths = exists_set(&["/workspace/workspaces.toml"]);
+        let manifest_paths = exists_set(&["/workspace/workspace.toml"]);
         let found =
             find_workspace_root(Path::new("/workspace/api"), |p| manifest_paths.contains(p));
         assert_eq!(found, Some(PathBuf::from("/workspace")));

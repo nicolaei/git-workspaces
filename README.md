@@ -1,7 +1,7 @@
-# git-workspaces
+# git-workspace
 
-A manifest-driven multi-repo git plugin. `git workspaces <cmd>` manages a fleet
-of independent git repos declared in a `workspaces.toml` at the root of a
+A manifest-driven multi-repo git plugin. `git workspace <cmd>` manages a fleet
+of independent git repos declared in a `workspace.toml` at the root of a
 parent folder — the pattern you want when several sibling repos live under
 one folder and get worked on together.
 
@@ -9,13 +9,13 @@ Install via Homebrew (recommended):
 
 ```sh
 brew tap nicolaei/tools
-brew install git-workspaces
+brew install git-workspace
 ```
 
 ## Local install (development)
 
 `git` finds subcommands by looking for an executable named `git-<cmd>`
-anywhere on `$PATH`. To make `git workspaces` resolve to this crate during
+anywhere on `$PATH`. To make `git workspace` resolve to this crate during
 local development:
 
 1. Build a release binary:
@@ -24,11 +24,11 @@ local development:
    cargo build --release
    ```
 
-2. Put the binary on `$PATH` as `git-workspaces`. Either symlink it into a
+2. Put the binary on `$PATH` as `git-workspace`. Either symlink it into a
    directory already on your `$PATH` (e.g. `~/.local/bin`, `/usr/local/bin`):
 
    ```sh
-   ln -sf "$(pwd)/target/release/git-workspaces" ~/.local/bin/git-workspaces
+   ln -sf "$(pwd)/target/release/git-workspace" ~/.local/bin/git-workspace
    ```
 
    or add `target/release/` itself to `$PATH`:
@@ -40,7 +40,7 @@ local development:
 3. Verify it resolves:
 
    ```sh
-   git workspaces --version
+   git workspace --version
    ```
 
    This should print the crate's version — proof that git's own subcommand
@@ -80,22 +80,22 @@ a matching tag — everything else is automatic.
 4. Watch it run:
 
    ```sh
-   gh run list --repo nicolaei/git-workspaces --limit 1
+   gh run list --repo nicolaei/git-workspace --limit 1
    ```
 
    The workflow (`.github/workflows/release.yml`) builds macOS binaries for
    both `aarch64-apple-darwin` and `x86_64-apple-darwin`, creates the GitHub
    Release with the built artifacts and a shell installer, then pushes an
    updated formula to the [`nicolaei/homebrew-tools`][tap] tap so
-   `brew install git-workspaces` picks up the new version.
+   `brew install git-workspace` picks up the new version.
 
    [tap]: https://github.com/nicolaei/homebrew-tools
 
 5. Verify the install path actually works end to end:
 
    ```sh
-   brew update && brew upgrade git-workspaces
-   git workspaces --version   # should print the new version
+   brew update && brew upgrade git-workspace
+   git workspace --version   # should print the new version
    ```
 
 ### Caveats

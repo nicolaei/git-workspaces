@@ -13,7 +13,7 @@ pub fn read_to_string(path: &Path) -> io::Result<String> {
 }
 
 /// Real filesystem write for the manifest contents (used by `add` to
-/// persist an updated `workspaces.toml`).
+/// persist an updated `workspace.toml`).
 pub fn write_string(path: &Path, contents: &str) -> io::Result<()> {
     std::fs::write(path, contents)
 }
@@ -49,8 +49,8 @@ pub fn list_subdirectory_names(path: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-const BEGIN_MARKER: &str = "# >>> git workspaces managed (do not edit below) >>>";
-const END_MARKER: &str = "# <<< git workspaces managed <<<";
+const BEGIN_MARKER: &str = "# >>> git workspace managed (do not edit below) >>>";
+const END_MARKER: &str = "# <<< git workspace managed <<<";
 
 /// Regenerate the managed block in `<workspace_root>/.gitignore` so every
 /// cloned repo path is ignored by the workspace root's own git repo.
@@ -123,7 +123,7 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
             content,
-            "# >>> git workspaces managed (do not edit below) >>>\n/api\n/web\n# <<< git workspaces managed <<<\n"
+            "# >>> git workspace managed (do not edit below) >>>\n/api\n/web\n# <<< git workspace managed <<<\n"
         );
     }
 
@@ -137,7 +137,7 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
             content,
-            "# >>> git workspaces managed (do not edit below) >>>\n/api\n/.worktrees\n# <<< git workspaces managed <<<\n"
+            "# >>> git workspace managed (do not edit below) >>>\n/api\n/.worktrees\n# <<< git workspace managed <<<\n"
         );
     }
 
@@ -147,7 +147,7 @@ mod tests {
         std::fs::create_dir(dir.path().join(".git")).unwrap();
         std::fs::write(
             dir.path().join(".gitignore"),
-            "*.log\n# >>> git workspaces managed (do not edit below) >>>\n/old\n# <<< git workspaces managed <<<\ntarget/\n",
+            "*.log\n# >>> git workspace managed (do not edit below) >>>\n/old\n# <<< git workspace managed <<<\ntarget/\n",
         )
         .unwrap();
 
@@ -156,7 +156,7 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
             content,
-            "*.log\n# >>> git workspaces managed (do not edit below) >>>\n/api\n# <<< git workspaces managed <<<\ntarget/\n"
+            "*.log\n# >>> git workspace managed (do not edit below) >>>\n/api\n# <<< git workspace managed <<<\ntarget/\n"
         );
     }
 
@@ -171,7 +171,7 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(
             content,
-            "# >>> git workspaces managed (do not edit below) >>>\n/api\n# <<< git workspaces managed <<<\n"
+            "# >>> git workspace managed (do not edit below) >>>\n/api\n# <<< git workspace managed <<<\n"
         );
     }
 

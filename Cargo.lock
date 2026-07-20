@@ -176,7 +176,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "git-workspaces"
+name = "git-workspace"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",

@@ -7,9 +7,9 @@ use clap::{Parser, Subcommand};
 mod domain;
 mod shell;
 
-/// `git workspaces` — manifest-driven multi-repo git plugin.
+/// `git workspace` — manifest-driven multi-repo git plugin.
 #[derive(Parser, Debug)]
-#[command(name = "git-workspaces", version, about, long_about = None)]
+#[command(name = "git-workspace", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -47,7 +47,7 @@ enum Command {
         command: Vec<String>,
     },
     /// Clone `<remote>` to `<path>` (relative to the workspace root) and
-    /// register it in `workspaces.toml`. The manifest key doubles as the
+    /// register it in `workspace.toml`. The manifest key doubles as the
     /// on-disk path, same convention `list`/`sync` rely on.
     Add {
         /// Where to clone the repo, relative to the workspace root. Also
@@ -152,7 +152,7 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
     };
 
     if let Some(unknown) = repos.iter().find(|name| !manifest.repos.contains_key(*name)) {
-        writeln!(out, "error: unknown repo \"{unknown}\" in workspaces.toml").ok();
+        writeln!(out, "error: unknown repo \"{unknown}\" in workspace.toml").ok();
         return ExitCode::FAILURE;
     }
 
@@ -220,7 +220,7 @@ fn run_sync(cwd: &Path, repos: &[String], out: &mut impl Write) -> ExitCode {
 }
 
 /// Clone `remote` to `<workspace root>/<path>` and register it in
-/// `workspaces.toml`. The duplicate-path check happens before the clone so
+/// `workspace.toml`. The duplicate-path check happens before the clone so
 /// a repeat `add` on an already-declared name fails fast without touching
 /// the filesystem (logged decision, story F).
 fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut impl Write) -> ExitCode {
@@ -230,7 +230,7 @@ fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut
     };
 
     if manifest.repos.contains_key(path) {
-        writeln!(out, "error: \"{path}\" is already declared in workspaces.toml").ok();
+        writeln!(out, "error: \"{path}\" is already declared in workspace.toml").ok();
         return ExitCode::FAILURE;
     }
 
@@ -248,14 +248,14 @@ fn run_add(cwd: &Path, path: &str, remote: &str, branch: Option<&str>, out: &mut
         }
     };
 
-    let manifest_path = root.join("workspaces.toml");
+    let manifest_path = root.join("workspace.toml");
     let serialized = domain::manifest::serialize_manifest(&updated);
     if let Err(e) = shell::fs::write_string(&manifest_path, &serialized) {
         writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
         return ExitCode::FAILURE;
     }
 
-    writeln!(out, "{path}: cloned and added to workspaces.toml").ok();
+    writeln!(out, "{path}: cloned and added to workspace.toml").ok();
     ExitCode::SUCCESS
 }
 
@@ -333,7 +333,7 @@ fn run_worktree_add(cwd: &Path, name: &str, branch: Option<&str>, out: &mut impl
     };
 
     if let Some(missing) = manifest.repos.keys().find(|repo| !root.join(repo).exists()) {
-        writeln!(out, "error: \"{missing}\" is not cloned yet — run `git workspaces sync` first").ok();
+        writeln!(out, "error: \"{missing}\" is not cloned yet — run `git workspace sync` first").ok();
         return ExitCode::FAILURE;
     }
 
@@ -357,7 +357,7 @@ fn run_worktree_add(cwd: &Path, name: &str, branch: Option<&str>, out: &mut impl
     }
 
     let worktree_root = root.join(".worktrees").join(name);
-    let manifest_path = worktree_root.join("workspaces.toml");
+    let manifest_path = worktree_root.join("workspace.toml");
     let serialized = domain::manifest::serialize_manifest(&manifest);
     if let Err(e) = shell::fs::write_string(&manifest_path, &serialized) {
         writeln!(out, "error: failed to write {}: {e}", manifest_path.display()).ok();
@@ -661,14 +661,14 @@ fn load_manifest(
     let Some(root) = domain::discover::find_workspace_root(cwd, shell::fs::exists) else {
         writeln!(
             out,
-            "error: no workspaces.toml found in {} or any parent directory",
+            "error: no workspace.toml found in {} or any parent directory",
             cwd.display()
         )
         .ok();
         return Err(ExitCode::FAILURE);
     };
 
-    let manifest_path = root.join("workspaces.toml");
+    let manifest_path = root.join("workspace.toml");
     let contents = match shell::fs::read_to_string(&manifest_path) {
         Ok(contents) => contents,
         Err(e) => {

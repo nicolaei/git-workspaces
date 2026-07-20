@@ -1,18 +1,18 @@
 [package]
-name = "git-workspaces"
+name = "git-workspace"
 version = "0.1.0"
 edition = "2021"
 description = "Manifest-driven multi-repo git plugin"
 license = "MPL-2.0"
-repository = "https://github.com/nicolaei/git-workspaces"
-homepage = "https://github.com/nicolaei/git-workspaces"
+repository = "https://github.com/nicolaei/git-workspace"
+homepage = "https://github.com/nicolaei/git-workspace"
 
 [[bin]]
-name = "git-workspaces"
+name = "git-workspace"
 path = "src/main.rs"
 
 [lib]
-name = "git_workspaces"
+name = "git_workspace"
 path = "src/lib.rs"
 
 [dependencies]

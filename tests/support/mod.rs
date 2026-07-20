@@ -1,7 +1,7 @@
 //! `Workspace` — the acceptance-test DSL harness every story extends.
 //!
-//! Runs the real compiled `git-workspaces` binary via `assert_cmd`, not
-//! `git_workspaces::run()` in-process — `std::process::ExitCode` can't be
+//! Runs the real compiled `git-workspace` binary via `assert_cmd`, not
+//! `git_workspace::run()` in-process — `std::process::ExitCode` can't be
 //! inspected on stable Rust, so a real child process is the only way to get
 //! at both a boolean success/failure and captured stdout/stderr from the
 //! same call. See the decision log on story B for the tradeoff.
@@ -42,7 +42,7 @@ impl Workspace {
         path
     }
 
-    /// Declare a repo in `workspaces.toml`, writing/updating the real file
+    /// Declare a repo in `workspace.toml`, writing/updating the real file
     /// on disk in the workspace's tempdir.
     pub fn declares_repo(&self, name: &str, remote: &str) -> &Self {
         self.repos
@@ -71,23 +71,23 @@ impl Workspace {
             }
             content.push('\n');
         }
-        std::fs::write(self.root().join("workspaces.toml"), content).expect("write manifest");
+        std::fs::write(self.root().join("workspace.toml"), content).expect("write manifest");
     }
 
-    /// Run `git-workspaces` with the given args from the workspace root.
+    /// Run `git-workspace` with the given args from the workspace root.
     pub fn run(&self, args: &[&str]) -> RunResult {
         self.run_from(self.root(), args)
     }
 
-    /// Run `git-workspaces` with the given args from an explicit cwd (e.g.
+    /// Run `git-workspace` with the given args from an explicit cwd (e.g.
     /// a nested subfolder).
     pub fn run_from(&self, cwd: &Path, args: &[&str]) -> RunResult {
-        let output = Command::cargo_bin("git-workspaces")
-            .expect("locate built git-workspaces binary")
+        let output = Command::cargo_bin("git-workspace")
+            .expect("locate built git-workspace binary")
             .args(args)
             .current_dir(cwd)
             .output()
-            .expect("run git-workspaces");
+            .expect("run git-workspace");
 
         RunResult {
             success: output.status.success(),
@@ -153,7 +153,7 @@ impl Workspace {
     /// child repos need a managed .gitignore to keep its status clean).
     pub fn init_as_git_repo(&self) -> &Self {
         run_git(self.root(), &["init", "--initial-branch=main"]).expect("init workspace root as git repo");
-        run_git(self.root(), &["add", "workspaces.toml"]).expect("stage manifest");
+        run_git(self.root(), &["add", "workspace.toml"]).expect("stage manifest");
         run_git(
             self.root(),
             &[
